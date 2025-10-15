@@ -8,8 +8,8 @@
 - 🔗 [[UNSUB_URL]] se mantiene funcional tanto en pruebas como en campañas programadas.
 - 🚀 Nueva tabla wp_wec_subscribers: sistema de baja automática con control de estado (subscribed / unsubscribed).
 - 🔒 Filtro automático para excluir contactos desuscritos en futuras campañas.
--🧹 Reorganización del código interno: separación de lógica SMTP / Cola / Suscripción.
--📘 README.md reescrito con documentación más clara y sin changelog interno.
+- 🧹 Reorganización del código interno: separación de lógica SMTP / Cola / Suscripción.
+- 📘 README.md reescrito con documentación más clara y sin changelog interno.
 
 ---
 
