@@ -3,11 +3,13 @@
 ---
 
 ### **v2.2.0 – Octubre 2025**
-- 🚀 Nueva tabla `wp_wec_subscribers` con sistema de baja automática.
-- 📨 Enlace dinámico `[[UNSUB_URL]]` en plantillas.
-- 🔒 Filtro automático para excluir `unsubscribed` en futuras campañas.
-- 🧹 Reorganización del código (separación lógica SMTP / Cola / Suscripción).
-- 📘 `README.md` reescrito (sin changelog interno).
+- 🛠️ Fix crítico: los estilos CSS de las plantillas ahora se conservan también en campañas ejecutadas por WP-Cron, evitando la sanitización que ocurría sin usuario con unfiltered_html.
+- 📨 Compatibilidad de clientes: los correos ahora se envían envueltos en un documento HTML completo (<!doctype html><html>…</html>), lo que mejora la consistencia entre la vista previa y los correos reales.
+- 🔗 [[UNSUB_URL]] se mantiene funcional tanto en pruebas como en campañas programadas.
+- 🚀 Nueva tabla wp_wec_subscribers: sistema de baja automática con control de estado (subscribed / unsubscribed).
+- 🔒 Filtro automático para excluir contactos desuscritos en futuras campañas.
+-🧹 Reorganización del código interno: separación de lógica SMTP / Cola / Suscripción.
+-📘 README.md reescrito con documentación más clara y sin changelog interno.
 
 ---
 
