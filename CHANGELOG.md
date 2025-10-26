@@ -18,7 +18,7 @@
 - Campo **Lote por minuto** persistente en BD.
 - Modo **Escaneo / Pegar correos**.
 - Soporte de `.env` para SMTP (prioritario).
-- Fix de nowdoc JS para evitar conflictos con PHP.
+- Fix de nowdoc JS para evitar conflictos con PHP
 
 ---
 
