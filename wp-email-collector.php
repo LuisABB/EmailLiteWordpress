@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WP Email Collector
  * Description: Gestiona plantillas de email, campañas con cola y vista previa. Incluye SMTP, WP-Cron, Unsubscribe y CSS Inliner para vista previa/envíos.
- * Version:     2.5.1-hotfix
- * Author:      Curren México
+ * Version:     3.0.0
+ * Author:      Drexora
  * License:     GPLv2 or later
  * Text Domain: wp-email-collector
  */
@@ -64,7 +64,6 @@ final class WEC_Email_Collector {
         add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_UPDATE,  [ $this, 'handle_update_campaign' ] );
         add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_DELETE,  [ $this, 'handle_delete_campaign' ] );
         add_action( 'admin_post_wec_force_cron',                      [ $this, 'handle_force_cron' ] );
-        add_action( 'admin_post_wec_setup_auto_cron',                 [ $this, 'handle_setup_auto_cron' ] );
 
         // Cron
         add_action( self::CRON_HOOK, [ $this, 'process_queue_cron' ] );
@@ -110,19 +109,12 @@ final class WEC_Email_Collector {
             // Parsear la fecha como si estuviera en CDMX
             $dt = new DateTime($datetime_local, $cdmx_tz);
             
-            // DEBUG
-            $cdmx_time = $dt->format('Y-m-d H:i:s');
-            error_log("WEC_DEBUG_CONVERT: INPUT='{$datetime_local}' PARSED_CDMX='{$cdmx_time}'");
-            
             // Convertir a UTC para almacenar en base de datos
             $dt->setTimezone($utc_tz);
             $utc_time = $dt->format('Y-m-d H:i:s');
             
-            error_log("WEC_DEBUG_CONVERT: CDMX='{$cdmx_time}' → UTC='{$utc_time}'");
-            
             return $utc_time;
         } catch (Exception $e) {
-            error_log("WEC_DEBUG_CONVERT: ERROR - " . $e->getMessage());
             // Si hay error, usar hora actual
             return current_time('mysql');
         }
@@ -148,7 +140,6 @@ final class WEC_Email_Collector {
             
             return $dt->format('Y-m-d\TH:i');
         } catch (Exception $e) {
-            error_log("WEC_DEBUG_MYSQL_TO_LOCAL: ERROR - " . $e->getMessage());
             return $datetime_mysql;
         }
     }
@@ -193,18 +184,12 @@ final class WEC_Email_Collector {
                 // Parsear hora actual como CDMX
                 $dt = new DateTime($current_wp, $cdmx_tz);
                 
-                // DEBUG
-                $cdmx_display = $dt->format('Y-m-d H:i:s');
-                
                 // Convertir a UTC
                 $dt->setTimezone($utc_tz);
                 $utc_result = $dt->format('Y-m-d H:i:s');
                 
-                error_log("WEC_DEBUG_CURRENT_TIME: WP_TIME='{$current_wp}' CDMX='{$cdmx_display}' → UTC='{$utc_result}'");
-                
                 return $utc_result;
             } catch (Exception $e) {
-                error_log("WEC_DEBUG_CURRENT_TIME: ERROR - " . $e->getMessage());
                 return $current_wp;
             }
         }
@@ -266,7 +251,7 @@ final class WEC_Email_Collector {
         if ( ! ( $is_wec || $is_wec_page || $is_tpl_list || $is_tpl_edit ) ) return;
 
         add_thickbox();
-        wp_register_script( 'wec-admin', false, [ 'jquery','thickbox' ], '2.5.1-hotfix', true );
+        wp_register_script( 'wec-admin', false, [ 'jquery','thickbox' ], '3.0.0', true );
         wp_enqueue_script( 'wec-admin' );
 
         wp_localize_script( 'wec-admin', 'WEC_AJAX', [
@@ -383,50 +368,10 @@ JS;
 
     /*** Admin UI ***/
     public function add_menu() {
-        add_menu_page( 'Email Manager','Email Manager','manage_options', self::ROOT_MENU_SLUG, [ $this, 'render_panel' ], 'dashicons-email', 26 );
-        add_submenu_page( self::ROOT_MENU_SLUG, 'Panel','Panel','manage_options', self::ROOT_MENU_SLUG, [ $this, 'render_panel' ] );
-        add_submenu_page( self::ROOT_MENU_SLUG, 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
-        add_submenu_page( self::ROOT_MENU_SLUG, 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
-    }
-
-    public function render_panel(){
-        if ( ! current_user_can('manage_options') ) return;
-        $templates = get_posts([ 'post_type'=> self::CPT_TPL, 'numberposts'=> -1, 'post_status'=> ['publish','draft'] ]);
-        ?>
-        <div class="wrap">
-            <h1>Email Manager — Panel</h1>
-            <h2>Enviar prueba</h2>
-            <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>">
-                <input type="hidden" name="action" value="<?php echo esc_attr(self::SEND_TEST_ACTION); ?>">
-                <?php wp_nonce_field( 'wec_send_test' ); ?>
-                <table class="form-table">
-                    <tr>
-                      <th><label for="wec_template_id">Plantilla</label></th>
-                      <td class="wec-inline">
-                        <select name="wec_template_id" id="wec_template_id">
-                          <?php foreach($templates as $tpl): ?>
-                          <option value="<?php echo esc_attr($tpl->ID); ?>"><?php echo esc_html($tpl->post_title ?: '(sin título)'); ?></option>
-                          <?php endforeach; ?>
-                        </select>
-                        <button id="wec-btn-preview" type="button" class="button">Vista previa</button>
-                      </td>
-                    </tr>
-                    <tr>
-                      <th><label for="wec_test_email">Correo</label></th>
-                      <td><input type="email" name="wec_test_email" id="wec_test_email" class="regular-text" required></td>
-                    </tr>
-                </table>
-                <p><button class="button button-primary">Enviar prueba</button></p>
-            </form>
-            
-            <?php 
-            // Agregar el modal de vista previa al Panel
-            echo $this->render_preview_modal_html(); 
-            ?>
-            
-            <!-- Debug temporal: verificar que el JavaScript funcione -->
-        </div>
-        <?php
+        add_menu_page( 'Email Manager','Email Manager','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ], 'dashicons-email', 26 );
+        add_submenu_page( 'wec-campaigns', 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
+        add_submenu_page( 'wec-campaigns', 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
+        add_submenu_page( 'wec-campaigns', 'Email Templates','Email Templates','manage_options', 'edit.php?post_type='.self::CPT_TPL );
     }
 
     public function render_campaigns_page(){
@@ -445,76 +390,10 @@ JS;
         <div class="wrap">
           <h1>Campañas</h1>
           
-          <?php if(isset($_GET['auto_cron'])): ?>
-          <div class="notice notice-success">
-              <p><strong>✅ Cron Automático Activado</strong> - Se han programado crons cada minuto durante los próximos 30 minutos para asegurar que las campañas se ejecuten automáticamente.</p>
-          </div>
-          <?php endif; ?>
-          
-          <?php if(isset($_GET['show_debug'])): ?>
-          <div class="notice notice-info">
-              <h3>Estado del Sistema</h3>
-              <ul>
-                  <li><strong>WP Cron habilitado:</strong> <?php echo defined('DISABLE_WP_CRON') && DISABLE_WP_CRON ? '❌ No' : '✅ Sí'; ?></li>
-                  <li><strong>Próximo cron programado:</strong> <?php 
-                      $next_cron = wp_next_scheduled(self::CRON_HOOK);
-                      echo $next_cron ? date('Y-m-d H:i:s', $next_cron) : 'Ninguno programado';
-                  ?></li>
-                  <li><strong>Hora actual WordPress:</strong> <?php echo current_time('mysql'); ?></li>
-                  <li><strong>Hora actual CDMX:</strong> <?php 
-                      $cdmx_tz = new DateTimeZone('America/Mexico_City');
-                      $now = new DateTime('now', $cdmx_tz);
-                      echo $now->format('d/m/Y H:i:s') . ' CDMX';
-                  ?></li>
-                  <li><strong>Zona horaria WordPress:</strong> <?php echo get_option('timezone_string') ?: 'UTC+' . get_option('gmt_offset'); ?></li>
-                  <li><strong>Trabajos pendientes:</strong> <?php 
-                      global $wpdb;
-                      $pending = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}wec_jobs WHERE status IN('pending','running')");
-                      echo intval($pending);
-                  ?></li>
-                  <li><strong>Items en cola:</strong> <?php 
-                      $queued = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}wec_job_items WHERE status='queued'");
-                      echo intval($queued);
-                  ?></li>
-              </ul>
-              
-              <!-- Test de conversión de zona horaria -->
-              <h4>🕐 Test de Zona Horaria</h4>
-              <ul>
-                  <li><strong>Ejemplo conversión:</strong> 
-                      <?php 
-                      $test_time = '2025-10-26 15:30';
-                      $converted = $this->convert_local_to_mysql($test_time);
-                      $back = $this->convert_mysql_to_local($converted);
-                      echo "'{$test_time}' CDMX → '{$converted}' UTC → '{$back}' CDMX";
-                      ?>
-                  </li>
-                  <li><strong>Hora actual CDMX para comparación:</strong> <?php echo $this->get_current_time_cdmx(); ?> UTC</li>
-              </ul>
-              
-              <!-- Información de Cron Externo -->
-              <h4>🌐 Cron Externo (Recomendado para Producción)</h4>
-              <ul>
-                  <li><strong>URL del Endpoint:</strong> <code><?php echo home_url('/?wec_cron=true&secret=tu_clave_secreta'); ?></code></li>
-                  <li><strong>Clave secreta actual:</strong> <code><?php echo defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : 'curren_email_cron_2024'; ?></code></li>
-                  <li><strong>Comando crontab (cada minuto):</strong><br>
-                      <code style="background:#f0f0f0;padding:5px;display:block;margin:5px 0;">
-                          * * * * * /usr/bin/curl -s "<?php echo home_url('/?wec_cron=true&secret=' . (defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : 'curren_email_cron_2024')); ?>" >/dev/null 2>&1
-                      </code>
-                  </li>
-                  <li><strong>💡 Ventajas:</strong> Independiente de visitantes, ejecución precisa cada minuto, logs detallados</li>
-              </ul>
-              
-              <p><a href="<?php echo admin_url('admin.php?page=wec-campaigns'); ?>" class="button">Ocultar Debug</a></p>
-          </div>
-          <?php else: ?>
           <p>
-              <a href="<?php echo admin_url('admin.php?page=wec-campaigns&show_debug=1'); ?>" class="button button-secondary">Mostrar Estado del Sistema</a>
               <a href="<?php echo admin_url('admin-post.php?action=wec_force_cron&_wpnonce=' . wp_create_nonce('wec_force_cron')); ?>" class="button">Procesar Cola Manualmente</a>
-              <a href="<?php echo admin_url('admin-post.php?action=wec_setup_auto_cron&_wpnonce=' . wp_create_nonce('wec_setup_auto_cron')); ?>" class="button button-primary">Activar Cron Automático</a>
-              <a href="<?php echo home_url('/?wec_cron=true&secret=' . (defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : 'curren_email_cron_2024')); ?>" class="button button-secondary" target="_blank">🔗 Probar Cron Externo</a>
+              <a href="<?php echo home_url('/?wec_cron=true&secret=' . (defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : 'curren_email_cron_2024')); ?>" class="button button-primary" target="_blank">🔗 Probar Cron Externo</a>
           </p>
-          <?php endif; ?>
           
           <?php if($job_to_edit): ?>
           <h2>Editar campaña #<?php echo intval($job_to_edit->id); ?></h2>
@@ -739,19 +618,6 @@ JS;
         exit;
     }
 
-    public function handle_setup_auto_cron(){
-        if( ! current_user_can('manage_options') ) wp_die('No autorizado.');
-        check_admin_referer( 'wec_setup_auto_cron' );
-        
-        // Programar múltiples crons para los próximos 30 minutos
-        for($i = 1; $i <= 30; $i++) {
-            wp_schedule_single_event( time() + (60 * $i), self::CRON_HOOK );
-        }
-        
-        wp_redirect( admin_url('admin.php?page=wec-campaigns&auto_cron=activated') );
-        exit;
-    }
-
     /*** Cron: procesar cola ***/
     public function process_queue_cron(){
         global $wpdb;
@@ -861,32 +727,98 @@ JS;
             echo '<div class="notice notice-success"><p>SMTP guardado.</p></div>';
             $host=$opts['host'];$port=$opts['port'];$user=$opts['user'];$pass=$opts['pass'];$secure=$opts['secure'];$from=$opts['from'];$from_name=$opts['from_name'];
         }
+
+        // Mostrar mensaje de test si viene de redirect
+        if(isset($_GET['test'])) {
+            if($_GET['test'] === 'ok') {
+                echo '<div class="notice notice-success"><p><strong>✅ Email de prueba enviado correctamente</strong> - La configuración SMTP funciona.</p></div>';
+            } else {
+                echo '<div class="notice notice-error"><p><strong>❌ Error al enviar email de prueba</strong> - Revisa la configuración SMTP.</p></div>';
+            }
+        }
+
+        $templates = get_posts([ 'post_type'=> self::CPT_TPL, 'numberposts'=> -1, 'post_status'=> ['publish','draft'] ]);
         ?>
-        <div class="wrap"><h1>Configuración SMTP</h1>
-        <form method="post">
-            <?php wp_nonce_field('wec_smtp_save'); ?>
-            <table class="form-table">
-              <tr><th><label for="SMTP_HOST">SMTP_HOST</label></th><td><input id="SMTP_HOST" name="SMTP_HOST" value="<?php echo esc_attr($host); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="SMTP_PORT">SMTP_PORT</label></th><td><input id="SMTP_PORT" name="SMTP_PORT" value="<?php echo esc_attr($port?:587); ?>" class="small-text"></td></tr>
-              <tr><th><label for="SMTP_USER">SMTP_USER</label></th><td><input id="SMTP_USER" name="SMTP_USER" value="<?php echo esc_attr($user); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="SMTP_PASS">SMTP_PASS</label></th><td><input id="SMTP_PASS" name="SMTP_PASS" type="password" value="<?php echo esc_attr($pass); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="FROM_NAME">FROM_NAME</label></th><td><input id="FROM_NAME" name="FROM_NAME" value="<?php echo esc_attr($from_name); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="FROM_EMAIL">FROM_EMAIL</label></th><td><input id="FROM_EMAIL" name="FROM_EMAIL" value="<?php echo esc_attr($from); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="SMTP_USE_SSL">SMTP_USE_SSL</label></th>
-                <td>
-                  <select id="SMTP_USE_SSL" name="SMTP_USE_SSL">
-                    <option value="" <?php selected($secure,'');?>>(ninguna)</option>
-                    <option value="tls" <?php selected($secure,'tls');?>>TLS (587)</option>
-                    <option value="ssl" <?php selected($secure,'ssl');?>>SSL (465)</option>
-                  </select>
-                </td>
-              </tr>
-            </table>
+        <div class="wrap">
+            <h1>Configuración SMTP</h1>
+            
+            <h2>Configuración del Servidor</h2>
+            <form method="post">
+                <?php wp_nonce_field('wec_smtp_save'); ?>
+                <table class="form-table">
+                  <tr><th><label for="SMTP_HOST">SMTP_HOST</label></th><td><input id="SMTP_HOST" name="SMTP_HOST" value="<?php echo esc_attr($host); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="SMTP_PORT">SMTP_PORT</label></th><td><input id="SMTP_PORT" name="SMTP_PORT" value="<?php echo esc_attr($port?:587); ?>" class="small-text"></td></tr>
+                  <tr><th><label for="SMTP_USER">SMTP_USER</label></th><td><input id="SMTP_USER" name="SMTP_USER" value="<?php echo esc_attr($user); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="SMTP_PASS">SMTP_PASS</label></th><td><input id="SMTP_PASS" name="SMTP_PASS" type="password" value="<?php echo esc_attr($pass); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="FROM_NAME">FROM_NAME</label></th><td><input id="FROM_NAME" name="FROM_NAME" value="<?php echo esc_attr($from_name); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="FROM_EMAIL">FROM_EMAIL</label></th><td><input id="FROM_EMAIL" name="FROM_EMAIL" value="<?php echo esc_attr($from); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="SMTP_USE_SSL">SMTP_USE_SSL</label></th>
+                    <td>
+                      <select name="SMTP_USE_SSL" id="SMTP_USE_SSL">
+                        <option value="" <?php selected($secure, ''); ?>>Sin cifrado</option>
+                        <option value="tls" <?php selected($secure, 'tls'); ?>>TLS</option>
+                        <option value="ssl" <?php selected($secure, 'ssl'); ?>>SSL</option>
+                      </select>
+                    </td>
+                  </tr>
+                </table>
+                <p><button class="button button-primary" name="wec_smtp_save" value="1">Guardar Configuración</button></p>
+            </form>
+
+            <hr>
+
+            <h2>Probar Configuración SMTP</h2>
+            <p>Envía un email de prueba para verificar que la configuración SMTP funciona correctamente.</p>
+            <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>">
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::SEND_TEST_ACTION); ?>">
+                <?php wp_nonce_field( 'wec_send_test' ); ?>
+                <table class="form-table">
+                    <tr>
+                      <th><label for="wec_template_id">Plantilla</label></th>
+                      <td class="wec-inline">
+                        <select name="wec_template_id" id="wec_template_id">
+                          <?php if($templates): foreach($templates as $tpl): ?>
+                          <option value="<?php echo esc_attr($tpl->ID); ?>"><?php echo esc_html($tpl->post_title ?: '(sin título)'); ?></option>
+                          <?php endforeach; else: ?>
+                          <option value="">No hay plantillas disponibles</option>
+                          <?php endif; ?>
+                        </select>
+                        <?php if($templates): ?>
+                        <button id="wec-btn-preview" type="button" class="button">Vista previa</button>
+                        <?php endif; ?>
+                      </td>
+                    </tr>
+                    <tr>
+                      <th><label for="wec_test_email">Correo destinatario</label></th>
+                      <td><input type="email" name="wec_test_email" id="wec_test_email" class="regular-text" required placeholder="prueba@ejemplo.com"></td>
+                    </tr>
+                </table>
+                <p>
+                    <?php if($templates): ?>
+                    <button class="button button-primary">Enviar Email de Prueba</button>
+                    <?php else: ?>
+                    <span class="description">Primero crea una plantilla de email para poder enviar pruebas.</span>
+                    <?php endif; ?>
+                </p>
+            </form>
+
+            <?php if($templates): ?>
             <p>
-              <button class="button" type="button" onclick="window.location='<?php echo esc_js( admin_url('edit.php?post_type='.self::CPT_TPL) ); ?>'">Volver a Email Templates</button>
-              <button class="button button-primary" name="wec_smtp_save" value="1">Guardar</button>
+              <a class="button" href="<?php echo esc_url( admin_url('edit.php?post_type='.self::CPT_TPL) ); ?>">Gestionar Plantillas</a>
             </p>
-        </form></div>
+            <?php else: ?>
+            <p>
+              <a class="button button-secondary" href="<?php echo esc_url( admin_url('post-new.php?post_type='.self::CPT_TPL) ); ?>">Crear Primera Plantilla</a>
+            </p>
+            <?php endif; ?>
+
+            <?php 
+            // Agregar el modal de vista previa para SMTP
+            if($templates) {
+                echo $this->render_preview_modal_html(); 
+            }
+            ?>
+        </div>
         <?php
     }
 
@@ -938,7 +870,7 @@ JS;
         );
 
         $ok = wp_mail( $to, $subject, $html_final, [ 'Content-Type: text/html; charset=UTF-8' ] );
-        wp_safe_redirect( admin_url('admin.php?page='.self::ROOT_MENU_SLUG.'&test='.($ok?'ok':'fail')) );
+        wp_safe_redirect( admin_url('admin.php?page=wec-smtp&test='.($ok?'ok':'fail')) );
         exit;
     }
 
@@ -2261,7 +2193,7 @@ add_shortcode('email_unsubscribe', function() {
 
     $wpdb->update($table, ['status' => 'unsubscribed'], ['email' => $email]);
 
-    return '<h2>Has cancelado tu suscripción a los correos de Curren México.</h2>
+    return '<h2>Has cancelado tu suscripción a los correos de Drexora.</h2>
             <p>Puedes volver a unirte cuando quieras 🕒</p>';
 });
 
