@@ -544,14 +544,14 @@ JS;
         // Render de plantilla una sola vez
         list($subject, $html_raw) = $this->render_template_content( $job->tpl_id );
 
-        // Envío REAL: inliner + resets (para clientes de correo)
+        // Envío REAL: inliner + resets (para clientes de correo) - MISMA CONFIGURACIÓN QUE PANEL
         $base_html = $this->build_email_html(
             $html_raw,
             null,
             [
-                'inline'        => true,
-                'preserve_css'  => true,
-                'reset_links'   => true
+                'inline'        => true,    // Activar inlining para Gmail
+                'preserve_css'  => false,   // Gmail necesita estilos inline puros (IGUAL QUE PANEL)
+                'reset_links'   => true     // Aplicar todas las correcciones
             ]
         );
 
