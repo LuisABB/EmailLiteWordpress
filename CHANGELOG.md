@@ -9,7 +9,7 @@ Todos los cambios importantes del proyecto serán documentados en este archivo.
 - **Timezone CDMX**: Soporte completo para zona horaria America/Mexico_City
 - **Inliner CSS**: Sistema avanzado de CSS inlining para compatibilidad con Gmail
 - **Vista Previa**: Modal responsive con múltiples tamaños de pantalla
-- **Unsubscribe**: Sistema completo de baja de suscripciones con tokens seguros
+- **Unsubscribe**: Sistema completo de baja de suscripciones con tokens seguros y placeholders `[[UNSUB_URL]]`
 
 ### 🔧 Mejoras
 - **Interfaz optimizada**: Eliminación de Panel, reorganización de menús
@@ -17,6 +17,7 @@ Todos los cambios importantes del proyecto serán documentados en este archivo.
 - **Campaña automática**: Programación múltiple de crons para mayor confiabilidad
 - **CSS Reset**: Estilos de email compatibles con todos los clientes
 - **Error handling**: Gestión mejorada de errores con mensajes claros
+- **Procesamiento individual**: Cada email se procesa con su URL única de unsubscribe
 
 ### 🐛 Correcciones
 - **Encoding**: Eliminación de caracteres CRLF de Windows
@@ -24,6 +25,7 @@ Todos los cambios importantes del proyecto serán documentados en este archivo.
 - **Botones**: Forzado de visibilidad en Gmail y clientes estrictos
 - **Links**: Reset completo de enlaces para máxima compatibilidad
 - **Redirecciones**: Fix de URLs después de eliminar Panel
+- **Unsubscribe URLs**: Fix completo de placeholders que aparecían como `%5B%5BUNSUB_URL%5D%5D`
 
 ### 🔐 Seguridad
 - **Cron externo**: Validación con clave secreta configurable

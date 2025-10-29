@@ -649,17 +649,6 @@ JS;
         // Render de plantilla una sola vez
         list($subject, $html_raw) = $this->render_template_content( $job->tpl_id );
 
-        // Envío REAL: inliner + resets (para clientes de correo) - MISMA CONFIGURACIÓN QUE PANEL
-        $base_html = $this->build_email_html(
-            $html_raw,
-            null,
-            [
-                'inline'        => true,    // Activar inlining para Gmail
-                'preserve_css'  => false,   // Gmail necesita estilos inline puros (IGUAL QUE PANEL)
-                'reset_links'   => true     // Aplicar todas las correcciones
-            ]
-        );
-
         $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
         $sent = 0; $failed = 0;
         foreach($batch as $item){
@@ -668,7 +657,18 @@ JS;
                 $failed++;
                 continue;
             }
-            $html_personal = str_replace('[[UNSUB_URL]]', $this->get_unsub_url($item->email), $base_html);
+            
+            // Generar HTML personalizado para cada destinatario (incluyendo UNSUB_URL)
+            $html_personal = $this->build_email_html(
+                $html_raw,
+                $item->email,  // Pasar el email para que se procese el UNSUB_URL
+                [
+                    'inline'        => true,    // Activar inlining para Gmail
+                    'preserve_css'  => false,   // Gmail necesita estilos inline puros
+                    'reset_links'   => true     // Aplicar todas las correcciones
+                ]
+            );
+            
             $ok = wp_mail( $item->email, $subject, $html_personal, $headers );
             if( $ok ){
                 $wpdb->update($table_items, ['status'=>'sent','attempts'=>$item->attempts+1], ['id'=>$item->id], ['%s','%d'], ['%d']);
@@ -984,6 +984,11 @@ JS;
 
         $html = $raw_html;
 
+        // PRIMER PASO: Reemplazar placeholders ANTES de cualquier procesamiento
+        if ( $recipient_email ) {
+            $html = str_replace('[[UNSUB_URL]]', $this->get_unsub_url($recipient_email), $html);
+        }
+
         // Para vista previa, forzar estilos críticos del botón
         if (!$opts['inline']) {
             $html = $this->force_button_visibility($html);
@@ -1014,10 +1019,6 @@ JS;
             $html = $this->enforce_link_styles($html);         // reglas especiales (DAMA/CABALLERO)
             $html = $this->enforce_button_styles($html);       // estilos críticos para botones
             $html = $this->enforce_navigation_styles($html);   // estilos críticos para navegación
-        }
-
-        if ( $recipient_email ) {
-            $html = str_replace('[[UNSUB_URL]]', $this->get_unsub_url($recipient_email), $html);
         }
 
         return $this->wrap_email_html($html);
