@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WP Email Collector
  * Description: Gestiona plantillas de email, campañas con cola y vista previa. Incluye SMTP, WP-Cron, Unsubscribe y CSS Inliner para vista previa/envíos.
- * Version:     2.5.1-hotfix
- * Author:      Curren México
+ * Version:     3.0.0
+ * Author:      Drexora
  * License:     GPLv2 or later
  * Text Domain: wp-email-collector
  */
@@ -37,6 +37,9 @@ final class WEC_Email_Collector {
 
     /*** Bootstrap ***/
     public function __construct() {
+        // Configurar zona horaria de Ciudad de México
+        add_action( 'init', [ $this, 'setup_timezone' ] );
+        
         // Menu & assets
         add_action( 'admin_menu',            [ $this, 'add_menu' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
@@ -64,6 +67,8 @@ final class WEC_Email_Collector {
 
         // Cron
         add_action( self::CRON_HOOK, [ $this, 'process_queue_cron' ] );
+        add_action( 'wp', [ $this, 'setup_recurring_cron' ] ); // Cron persistente cada minuto
+        add_action( 'init', [ $this, 'handle_external_cron' ] ); // Endpoint para cron externo
 
         // Install/Upgrades
         register_activation_hook( __FILE__, [ $this, 'maybe_install_tables' ] );
@@ -78,6 +83,155 @@ final class WEC_Email_Collector {
                    . 'La vista previa sigue funcionando, pero el inliner para selectores descendientes (p.ej. <code>.clase a</code>) será limitado.</p></div>';
             }
         } );
+    }
+
+    /*** Timezone Setup ***/
+    public function setup_timezone() {
+        // Configurar zona horaria de Ciudad de México
+        if (!get_option('timezone_string')) {
+            update_option('timezone_string', 'America/Mexico_City');
+        }
+    }
+
+    /**
+     * Convierte fecha/hora local de CDMX a formato MySQL UTC
+     */
+    private function convert_local_to_mysql($datetime_local) {
+        if (empty($datetime_local)) {
+            return current_time('mysql');
+        }
+        
+        // Crear objeto DateTime en zona horaria de CDMX
+        $cdmx_tz = new DateTimeZone('America/Mexico_City');
+        $utc_tz = new DateTimeZone('UTC');
+        
+        try {
+            // Parsear la fecha como si estuviera en CDMX
+            $dt = new DateTime($datetime_local, $cdmx_tz);
+            
+            // Convertir a UTC para almacenar en base de datos
+            $dt->setTimezone($utc_tz);
+            $utc_time = $dt->format('Y-m-d H:i:s');
+            
+            return $utc_time;
+        } catch (Exception $e) {
+            // Si hay error, usar hora actual
+            return current_time('mysql');
+        }
+    }
+
+    /**
+     * Convierte fecha MySQL UTC a formato local CDMX para mostrar
+     */
+    private function convert_mysql_to_local($datetime_mysql) {
+        if (empty($datetime_mysql)) {
+            return '';
+        }
+        
+        $utc_tz = new DateTimeZone('UTC');
+        $cdmx_tz = new DateTimeZone('America/Mexico_City');
+        
+        try {
+            // Parsear como UTC
+            $dt = new DateTime($datetime_mysql, $utc_tz);
+            
+            // Convertir a CDMX
+            $dt->setTimezone($cdmx_tz);
+            
+            return $dt->format('Y-m-d\TH:i');
+        } catch (Exception $e) {
+            return $datetime_mysql;
+        }
+    }
+
+    /**
+     * Formatea fecha MySQL UTC para mostrar en CDMX con etiqueta
+     */
+    private function format_display_datetime($datetime_mysql) {
+        if (empty($datetime_mysql)) {
+            return 'Inmediato';
+        }
+        
+        $utc_tz = new DateTimeZone('UTC');
+        $cdmx_tz = new DateTimeZone('America/Mexico_City');
+        
+        try {
+            // Parsear como UTC
+            $dt = new DateTime($datetime_mysql, $utc_tz);
+            
+            // Convertir a CDMX
+            $dt->setTimezone($cdmx_tz);
+            
+            return $dt->format('d/m/Y H:i') . ' CDMX';
+        } catch (Exception $e) {
+            return $datetime_mysql;
+        }
+    }
+
+    /**
+     * Obtiene la hora actual en zona horaria CDMX convertida a UTC para comparaciones
+     */
+    private function get_current_time_cdmx() {
+        // CORREGIDO: Usar current_time() con timezone de WordPress
+        $current_wp = current_time('mysql');
+        
+        // Si WordPress ya está en CDMX, convertir a UTC
+        if (get_option('timezone_string') === 'America/Mexico_City') {
+            $cdmx_tz = new DateTimeZone('America/Mexico_City');
+            $utc_tz = new DateTimeZone('UTC');
+            
+            try {
+                // Parsear hora actual como CDMX
+                $dt = new DateTime($current_wp, $cdmx_tz);
+                
+                // Convertir a UTC
+                $dt->setTimezone($utc_tz);
+                $utc_result = $dt->format('Y-m-d H:i:s');
+                
+                return $utc_result;
+            } catch (Exception $e) {
+                return $current_wp;
+            }
+        }
+        
+        // Si WordPress no está en CDMX, usar hora del servidor
+        return $current_wp;
+    }
+
+    /**
+     * Parsea archivos .env y devuelve array asociativo
+     */
+    private function parse_env_file($file_path) {
+        if (!file_exists($file_path)) {
+            return [];
+        }
+        
+        $env = [];
+        $lines = file($file_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        
+        foreach ($lines as $line) {
+            // Ignorar comentarios
+            if (strpos(trim($line), '#') === 0) {
+                continue;
+            }
+            
+            // Buscar formato KEY=VALUE
+            if (strpos($line, '=') !== false) {
+                list($key, $value) = explode('=', $line, 2);
+                $key = trim($key);
+                $value = trim($value);
+                
+                // Remover comillas si las hay
+                if ((substr($value, 0, 1) === '"' && substr($value, -1) === '"') ||
+                    (substr($value, 0, 1) === "'" && substr($value, -1) === "'")) {
+                    $value = substr($value, 1, -1);
+                }
+                
+                $env[$key] = $value;
+            }
+        }
+        
+        return $env;
     }
 
     /*** Assets ***/
@@ -97,7 +251,7 @@ final class WEC_Email_Collector {
         if ( ! ( $is_wec || $is_wec_page || $is_tpl_list || $is_tpl_edit ) ) return;
 
         add_thickbox();
-        wp_register_script( 'wec-admin', false, [ 'jquery','thickbox' ], '2.5.1-hotfix', true );
+        wp_register_script( 'wec-admin', false, [ 'jquery','thickbox' ], '3.0.0', true );
         wp_enqueue_script( 'wec-admin' );
 
         wp_localize_script( 'wec-admin', 'WEC_AJAX', [
@@ -214,50 +368,10 @@ JS;
 
     /*** Admin UI ***/
     public function add_menu() {
-        add_menu_page( 'Email Manager','Email Manager','manage_options', self::ROOT_MENU_SLUG, [ $this, 'render_panel' ], 'dashicons-email', 26 );
-        add_submenu_page( self::ROOT_MENU_SLUG, 'Panel','Panel','manage_options', self::ROOT_MENU_SLUG, [ $this, 'render_panel' ] );
-        add_submenu_page( self::ROOT_MENU_SLUG, 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
-        add_submenu_page( self::ROOT_MENU_SLUG, 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
-    }
-
-    public function render_panel(){
-        if ( ! current_user_can('manage_options') ) return;
-        $templates = get_posts([ 'post_type'=> self::CPT_TPL, 'numberposts'=> -1, 'post_status'=> ['publish','draft'] ]);
-        ?>
-        <div class="wrap">
-            <h1>Email Manager — Panel</h1>
-            <h2>Enviar prueba</h2>
-            <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>">
-                <input type="hidden" name="action" value="<?php echo esc_attr(self::SEND_TEST_ACTION); ?>">
-                <?php wp_nonce_field( 'wec_send_test' ); ?>
-                <table class="form-table">
-                    <tr>
-                      <th><label for="wec_template_id">Plantilla</label></th>
-                      <td class="wec-inline">
-                        <select name="wec_template_id" id="wec_template_id">
-                          <?php foreach($templates as $tpl): ?>
-                          <option value="<?php echo esc_attr($tpl->ID); ?>"><?php echo esc_html($tpl->post_title ?: '(sin título)'); ?></option>
-                          <?php endforeach; ?>
-                        </select>
-                        <button id="wec-btn-preview" type="button" class="button">Vista previa</button>
-                      </td>
-                    </tr>
-                    <tr>
-                      <th><label for="wec_test_email">Correo</label></th>
-                      <td><input type="email" name="wec_test_email" id="wec_test_email" class="regular-text" required></td>
-                    </tr>
-                </table>
-                <p><button class="button button-primary">Enviar prueba</button></p>
-            </form>
-            
-            <?php 
-            // Agregar el modal de vista previa al Panel
-            echo $this->render_preview_modal_html(); 
-            ?>
-            
-            <!-- Debug temporal: verificar que el JavaScript funcione -->
-        </div>
-        <?php
+        add_menu_page( 'Email Manager','Email Manager','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ], 'dashicons-email', 26 );
+        add_submenu_page( 'wec-campaigns', 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
+        add_submenu_page( 'wec-campaigns', 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
+        add_submenu_page( 'wec-campaigns', 'Email Templates','Email Templates','manage_options', 'edit.php?post_type='.self::CPT_TPL );
     }
 
     public function render_campaigns_page(){
@@ -276,34 +390,10 @@ JS;
         <div class="wrap">
           <h1>Campañas</h1>
           
-          <?php if(isset($_GET['show_debug'])): ?>
-          <div class="notice notice-info">
-              <h3>Estado del Sistema</h3>
-              <ul>
-                  <li><strong>WP Cron habilitado:</strong> <?php echo defined('DISABLE_WP_CRON') && DISABLE_WP_CRON ? '❌ No' : '✅ Sí'; ?></li>
-                  <li><strong>Próximo cron programado:</strong> <?php 
-                      $next_cron = wp_next_scheduled(self::CRON_HOOK);
-                      echo $next_cron ? date('Y-m-d H:i:s', $next_cron) : 'Ninguno programado';
-                  ?></li>
-                  <li><strong>Hora actual WordPress:</strong> <?php echo current_time('mysql'); ?></li>
-                  <li><strong>Trabajos pendientes:</strong> <?php 
-                      global $wpdb;
-                      $pending = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}wec_jobs WHERE status IN('pending','running')");
-                      echo intval($pending);
-                  ?></li>
-                  <li><strong>Items en cola:</strong> <?php 
-                      $queued = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}wec_job_items WHERE status='queued'");
-                      echo intval($queued);
-                  ?></li>
-              </ul>
-              <p><a href="<?php echo admin_url('admin.php?page=wec-campaigns'); ?>" class="button">Ocultar Debug</a></p>
-          </div>
-          <?php else: ?>
           <p>
-              <a href="<?php echo admin_url('admin.php?page=wec-campaigns&show_debug=1'); ?>" class="button button-secondary">Mostrar Estado del Sistema</a>
               <a href="<?php echo admin_url('admin-post.php?action=wec_force_cron&_wpnonce=' . wp_create_nonce('wec_force_cron')); ?>" class="button">Procesar Cola Manualmente</a>
+              <a href="<?php echo home_url('/?wec_cron=true&secret=' . (defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : 'curren_email_cron_2024')); ?>" class="button button-primary" target="_blank">🔗 Probar Cron Externo</a>
           </p>
-          <?php endif; ?>
           
           <?php if($job_to_edit): ?>
           <h2>Editar campaña #<?php echo intval($job_to_edit->id); ?></h2>
@@ -325,8 +415,8 @@ JS;
               </tr>
               <tr>
                 <th>Inicio</th>
-                <td><input type="datetime-local" name="start_at" value="<?php echo esc_attr( str_replace(' ', 'T', $job_to_edit->start_at) ); ?>">
-                  <p class="wec-help">Déjalo vacío para empezar de inmediato.</p>
+                <td><input type="datetime-local" name="start_at" value="<?php echo esc_attr( $this->convert_mysql_to_local($job_to_edit->start_at) ); ?>">
+                  <p class="wec-help">Déjalo vacío para empezar de inmediato. <strong>Hora de Ciudad de México (CDMX)</strong></p>
                 </td>
               </tr>
               <tr>
@@ -367,7 +457,8 @@ JS;
                 <th>Inicio</th>
                 <td>
                   <input type="datetime-local" name="start_at">
-                  <p class="wec-help">Déjalo vacío para empezar de inmediato.</p>
+                  <p class="wec-help">Déjalo vacío para empezar de inmediato. <strong>Hora de Ciudad de México (CDMX)</strong></p>
+                  <p class="wec-help" style="color:#0073aa;"><strong>💡 Tip:</strong> El sistema ajustará automáticamente tu hora local a la zona horaria del servidor.</p>
                 </td>
               </tr>
               <tr>
@@ -389,7 +480,7 @@ JS;
                 <td>#<?php echo intval($job->id); ?></td>
                 <td><?php echo esc_html($job->status); ?></td>
                 <td><?php echo esc_html(get_the_title($job->tpl_id)); ?></td>
-                <td><?php echo esc_html($job->start_at); ?></td>
+                <td><?php echo esc_html($this->format_display_datetime($job->start_at)); ?></td>
                 <td><?php echo intval($job->total); ?></td>
                 <td><?php echo intval($job->sent); ?></td>
                 <td><?php echo intval($job->failed); ?></td>
@@ -436,8 +527,8 @@ JS;
         $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
         $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
 
-        // start_at: si viene vacío, ahora mismo
-        $start_value = $start_at ? $start_at : current_time('mysql');
+        // start_at: si viene vacío, ahora mismo. Si viene con valor, convertir de CDMX a UTC
+        $start_value = $start_at ? $this->convert_local_to_mysql($start_at) : current_time('mysql');
 
         $wpdb->insert($table_jobs,[
             'tpl_id'   => $tpl_id,
@@ -461,9 +552,17 @@ JS;
             ], ['%d','%s','%s','%s','%d']);
         }
 
-        // Programar cron inmediato
+        // MEJORA: Programar múltiples crons para asegurar ejecución
+        $start_time = $start_at ? strtotime($start_value) : time();
+        
+        // Programar cron principal
         if( ! wp_next_scheduled( self::CRON_HOOK ) ){
-            wp_schedule_single_event( time() + 30, self::CRON_HOOK );
+            wp_schedule_single_event( $start_time + 30, self::CRON_HOOK );
+        }
+        
+        // Programar crons de respaldo cada 2 minutos durante los próximos 10 minutos
+        for($i = 1; $i <= 5; $i++) {
+            wp_schedule_single_event( $start_time + (120 * $i), self::CRON_HOOK );
         }
 
         wp_redirect( admin_url('admin.php?page=wec-campaigns') );
@@ -484,7 +583,11 @@ JS;
         $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
         $data = [ 'tpl_id'=>$tpl_id, 'rate_per_minute'=>$rate_per_min ];
         $fmt  = [ '%d','%d' ];
-        if($start_at !== ''){ $data['start_at'] = $start_at; $fmt[] = '%s'; }
+        if($start_at !== ''){ 
+            // Convertir fecha de CDMX a UTC para almacenar
+            $data['start_at'] = $this->convert_local_to_mysql($start_at); 
+            $fmt[] = '%s'; 
+        }
         $wpdb->update($table_jobs, $data, ['id'=>$job_id], $fmt, ['%d']);
 
         wp_safe_redirect( admin_url('admin.php?page=wec-campaigns') );
@@ -521,8 +624,10 @@ JS;
         $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
         $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
 
-        // Obtener campaña pendiente cuya hora haya llegado
-        $job = $wpdb->get_row( $wpdb->prepare("SELECT * FROM {$table_jobs} WHERE status IN('pending','running') AND start_at <= %s ORDER BY id ASC LIMIT 1", current_time('mysql') ) );
+        // Obtener campaña pendiente cuya hora haya llegado (comparar con hora CDMX convertida a UTC)
+        $current_time_utc = $this->get_current_time_cdmx();
+        $job = $wpdb->get_row( $wpdb->prepare("SELECT * FROM {$table_jobs} WHERE status IN('pending','running') AND start_at <= %s ORDER BY id ASC LIMIT 1", $current_time_utc ) );
+        
         if( ! $job ) {
             return;
         }
@@ -544,17 +649,6 @@ JS;
         // Render de plantilla una sola vez
         list($subject, $html_raw) = $this->render_template_content( $job->tpl_id );
 
-        // Envío REAL: inliner + resets (para clientes de correo)
-        $base_html = $this->build_email_html(
-            $html_raw,
-            null,
-            [
-                'inline'        => true,
-                'preserve_css'  => true,
-                'reset_links'   => true
-            ]
-        );
-
         $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
         $sent = 0; $failed = 0;
         foreach($batch as $item){
@@ -563,7 +657,18 @@ JS;
                 $failed++;
                 continue;
             }
-            $html_personal = str_replace('[[UNSUB_URL]]', $this->get_unsub_url($item->email), $base_html);
+            
+            // Generar HTML personalizado para cada destinatario (incluyendo UNSUB_URL)
+            $html_personal = $this->build_email_html(
+                $html_raw,
+                $item->email,  // Pasar el email para que se procese el UNSUB_URL
+                [
+                    'inline'        => true,    // Activar inlining para Gmail
+                    'preserve_css'  => false,   // Gmail necesita estilos inline puros
+                    'reset_links'   => true     // Aplicar todas las correcciones
+                ]
+            );
+            
             $ok = wp_mail( $item->email, $subject, $html_personal, $headers );
             if( $ok ){
                 $wpdb->update($table_items, ['status'=>'sent','attempts'=>$item->attempts+1], ['id'=>$item->id], ['%s','%d'], ['%d']);
@@ -573,11 +678,19 @@ JS;
                 $failed++;
             }
         }
+        
         // Actualizar totales
         $wpdb->query( $wpdb->prepare("UPDATE {$table_jobs} SET sent = sent + %d, failed = failed + %d WHERE id=%d", $sent, $failed, $job->id ) );
 
+        // IMPORTANTE: Programar siguiente ejecución SIEMPRE que haya trabajo pendiente
         if( (int) $wpdb->get_var( $wpdb->prepare("SELECT COUNT(*) FROM {$table_items} WHERE job_id=%d AND status='queued'", $job->id ) ) > 0 ){
             wp_schedule_single_event( time() + 60, self::CRON_HOOK );
+        }
+        
+        // Verificar si hay otros trabajos pendientes para procesar
+        $next_job = $wpdb->get_row( $wpdb->prepare("SELECT * FROM {$table_jobs} WHERE status IN('pending','running') AND start_at <= %s AND id != %d ORDER BY id ASC LIMIT 1", $current_time_utc, $job->id ) );
+        if( $next_job ) {
+            wp_schedule_single_event( time() + 30, self::CRON_HOOK );
         }
     }
 
@@ -614,32 +727,98 @@ JS;
             echo '<div class="notice notice-success"><p>SMTP guardado.</p></div>';
             $host=$opts['host'];$port=$opts['port'];$user=$opts['user'];$pass=$opts['pass'];$secure=$opts['secure'];$from=$opts['from'];$from_name=$opts['from_name'];
         }
+
+        // Mostrar mensaje de test si viene de redirect
+        if(isset($_GET['test'])) {
+            if($_GET['test'] === 'ok') {
+                echo '<div class="notice notice-success"><p><strong>✅ Email de prueba enviado correctamente</strong> - La configuración SMTP funciona.</p></div>';
+            } else {
+                echo '<div class="notice notice-error"><p><strong>❌ Error al enviar email de prueba</strong> - Revisa la configuración SMTP.</p></div>';
+            }
+        }
+
+        $templates = get_posts([ 'post_type'=> self::CPT_TPL, 'numberposts'=> -1, 'post_status'=> ['publish','draft'] ]);
         ?>
-        <div class="wrap"><h1>Configuración SMTP</h1>
-        <form method="post">
-            <?php wp_nonce_field('wec_smtp_save'); ?>
-            <table class="form-table">
-              <tr><th><label for="SMTP_HOST">SMTP_HOST</label></th><td><input id="SMTP_HOST" name="SMTP_HOST" value="<?php echo esc_attr($host); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="SMTP_PORT">SMTP_PORT</label></th><td><input id="SMTP_PORT" name="SMTP_PORT" value="<?php echo esc_attr($port?:587); ?>" class="small-text"></td></tr>
-              <tr><th><label for="SMTP_USER">SMTP_USER</label></th><td><input id="SMTP_USER" name="SMTP_USER" value="<?php echo esc_attr($user); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="SMTP_PASS">SMTP_PASS</label></th><td><input id="SMTP_PASS" name="SMTP_PASS" type="password" value="<?php echo esc_attr($pass); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="FROM_NAME">FROM_NAME</label></th><td><input id="FROM_NAME" name="FROM_NAME" value="<?php echo esc_attr($from_name); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="FROM_EMAIL">FROM_EMAIL</label></th><td><input id="FROM_EMAIL" name="FROM_EMAIL" value="<?php echo esc_attr($from); ?>" class="regular-text"></td></tr>
-              <tr><th><label for="SMTP_USE_SSL">SMTP_USE_SSL</label></th>
-                <td>
-                  <select id="SMTP_USE_SSL" name="SMTP_USE_SSL">
-                    <option value="" <?php selected($secure,'');?>>(ninguna)</option>
-                    <option value="tls" <?php selected($secure,'tls');?>>TLS (587)</option>
-                    <option value="ssl" <?php selected($secure,'ssl');?>>SSL (465)</option>
-                  </select>
-                </td>
-              </tr>
-            </table>
+        <div class="wrap">
+            <h1>Configuración SMTP</h1>
+            
+            <h2>Configuración del Servidor</h2>
+            <form method="post">
+                <?php wp_nonce_field('wec_smtp_save'); ?>
+                <table class="form-table">
+                  <tr><th><label for="SMTP_HOST">SMTP_HOST</label></th><td><input id="SMTP_HOST" name="SMTP_HOST" value="<?php echo esc_attr($host); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="SMTP_PORT">SMTP_PORT</label></th><td><input id="SMTP_PORT" name="SMTP_PORT" value="<?php echo esc_attr($port?:587); ?>" class="small-text"></td></tr>
+                  <tr><th><label for="SMTP_USER">SMTP_USER</label></th><td><input id="SMTP_USER" name="SMTP_USER" value="<?php echo esc_attr($user); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="SMTP_PASS">SMTP_PASS</label></th><td><input id="SMTP_PASS" name="SMTP_PASS" type="password" value="<?php echo esc_attr($pass); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="FROM_NAME">FROM_NAME</label></th><td><input id="FROM_NAME" name="FROM_NAME" value="<?php echo esc_attr($from_name); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="FROM_EMAIL">FROM_EMAIL</label></th><td><input id="FROM_EMAIL" name="FROM_EMAIL" value="<?php echo esc_attr($from); ?>" class="regular-text"></td></tr>
+                  <tr><th><label for="SMTP_USE_SSL">SMTP_USE_SSL</label></th>
+                    <td>
+                      <select name="SMTP_USE_SSL" id="SMTP_USE_SSL">
+                        <option value="" <?php selected($secure, ''); ?>>Sin cifrado</option>
+                        <option value="tls" <?php selected($secure, 'tls'); ?>>TLS</option>
+                        <option value="ssl" <?php selected($secure, 'ssl'); ?>>SSL</option>
+                      </select>
+                    </td>
+                  </tr>
+                </table>
+                <p><button class="button button-primary" name="wec_smtp_save" value="1">Guardar Configuración</button></p>
+            </form>
+
+            <hr>
+
+            <h2>Probar Configuración SMTP</h2>
+            <p>Envía un email de prueba para verificar que la configuración SMTP funciona correctamente.</p>
+            <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>">
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::SEND_TEST_ACTION); ?>">
+                <?php wp_nonce_field( 'wec_send_test' ); ?>
+                <table class="form-table">
+                    <tr>
+                      <th><label for="wec_template_id">Plantilla</label></th>
+                      <td class="wec-inline">
+                        <select name="wec_template_id" id="wec_template_id">
+                          <?php if($templates): foreach($templates as $tpl): ?>
+                          <option value="<?php echo esc_attr($tpl->ID); ?>"><?php echo esc_html($tpl->post_title ?: '(sin título)'); ?></option>
+                          <?php endforeach; else: ?>
+                          <option value="">No hay plantillas disponibles</option>
+                          <?php endif; ?>
+                        </select>
+                        <?php if($templates): ?>
+                        <button id="wec-btn-preview" type="button" class="button">Vista previa</button>
+                        <?php endif; ?>
+                      </td>
+                    </tr>
+                    <tr>
+                      <th><label for="wec_test_email">Correo destinatario</label></th>
+                      <td><input type="email" name="wec_test_email" id="wec_test_email" class="regular-text" required placeholder="prueba@ejemplo.com"></td>
+                    </tr>
+                </table>
+                <p>
+                    <?php if($templates): ?>
+                    <button class="button button-primary">Enviar Email de Prueba</button>
+                    <?php else: ?>
+                    <span class="description">Primero crea una plantilla de email para poder enviar pruebas.</span>
+                    <?php endif; ?>
+                </p>
+            </form>
+
+            <?php if($templates): ?>
             <p>
-              <button class="button" type="button" onclick="window.location='<?php echo esc_js( admin_url('edit.php?post_type='.self::CPT_TPL) ); ?>'">Volver a Email Templates</button>
-              <button class="button button-primary" name="wec_smtp_save" value="1">Guardar</button>
+              <a class="button" href="<?php echo esc_url( admin_url('edit.php?post_type='.self::CPT_TPL) ); ?>">Gestionar Plantillas</a>
             </p>
-        </form></div>
+            <?php else: ?>
+            <p>
+              <a class="button button-secondary" href="<?php echo esc_url( admin_url('post-new.php?post_type='.self::CPT_TPL) ); ?>">Crear Primera Plantilla</a>
+            </p>
+            <?php endif; ?>
+
+            <?php 
+            // Agregar el modal de vista previa para SMTP
+            if($templates) {
+                echo $this->render_preview_modal_html(); 
+            }
+            ?>
+        </div>
         <?php
     }
 
@@ -691,7 +870,7 @@ JS;
         );
 
         $ok = wp_mail( $to, $subject, $html_final, [ 'Content-Type: text/html; charset=UTF-8' ] );
-        wp_safe_redirect( admin_url('admin.php?page='.self::ROOT_MENU_SLUG.'&test='.($ok?'ok':'fail')) );
+        wp_safe_redirect( admin_url('admin.php?page=wec-smtp&test='.($ok?'ok':'fail')) );
         exit;
     }
 
@@ -769,6 +948,24 @@ JS;
         update_post_meta( $post_id, self::META_SUBJECT, $subject );
     }
 
+    /*** Configurar Cron Persistente ***/
+    public function setup_recurring_cron() {
+        // Solo configurar en frontend para evitar conflictos en admin
+        if (is_admin()) return;
+        
+        // Verificar si hay trabajos pendientes
+        global $wpdb;
+        $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
+        $pending_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')");
+        
+        if ($pending_jobs > 0) {
+            // Si hay trabajos pendientes, asegurar que hay un cron programado
+            if (!wp_next_scheduled(self::CRON_HOOK)) {
+                wp_schedule_single_event(time() + 60, self::CRON_HOOK);
+            }
+        }
+    }
+
     /**
      * Construye el HTML final del email.
      * $opts = [
@@ -786,6 +983,11 @@ JS;
         $opts = array_merge($defaults, $opts);
 
         $html = $raw_html;
+
+        // PRIMER PASO: Reemplazar placeholders ANTES de cualquier procesamiento
+        if ( $recipient_email ) {
+            $html = str_replace('[[UNSUB_URL]]', $this->get_unsub_url($recipient_email), $html);
+        }
 
         // Para vista previa, forzar estilos críticos del botón
         if (!$opts['inline']) {
@@ -817,10 +1019,6 @@ JS;
             $html = $this->enforce_link_styles($html);         // reglas especiales (DAMA/CABALLERO)
             $html = $this->enforce_button_styles($html);       // estilos críticos para botones
             $html = $this->enforce_navigation_styles($html);   // estilos críticos para navegación
-        }
-
-        if ( $recipient_email ) {
-            $html = str_replace('[[UNSUB_URL]]', $this->get_unsub_url($recipient_email), $html);
         }
 
         return $this->wrap_email_html($html);
@@ -965,10 +1163,10 @@ JS;
                 $new_decl = trim($decl);
                 if ($new_decl !== '' && substr($new_decl, -1) !== ';') $new_decl .= ';';
                 
-                if (preg_match('/\sstyle=("|\')(.*?)\1/i', $element, $sm)){
+                if (preg_match('/\sstyle=(["\'])(.*?)\1/i', $element, $sm)){
                     $existing = trim($sm[2]);
                     $combined = $existing . ($existing && substr($existing, -1) !== ';' ? ';' : '') . $new_decl;
-                    return preg_replace('/\sstyle=("|\')(.*?)\1/i', ' style="'.$combined.'"', $element, 1);
+                    return preg_replace('/\sstyle=(["\'])(.*?)\1/i', ' style="'.$combined.'"', $element, 1);
                 } else {
                     return preg_replace('/>/', ' style="'.esc_attr($new_decl).'">', $element, 1);
                 }
@@ -1343,151 +1541,6 @@ JS;
     }
 
     /**
-     * Detecta y fuerza estilos de botones ANTES del CSS inlining
-     * Funciona mientras las clases CSS aún existen
-     */
-    private function enforce_button_styles_pre_inline($html) {
-        // Estilos para botones rojos (like Comprar) - CENTRADO CON DISPLAY:BLOCK
-        $button_styles = 'display:block!important;visibility:visible!important;opacity:1!important;background-color:#D94949!important;color:#ffffff!important;padding:12px 22px!important;border-radius:8px!important;font-family:Arial,Helvetica,sans-serif!important;font-weight:700!important;font-size:16px!important;text-decoration:none!important;border:0!important;outline:none!important;text-align:center!important;line-height:1.2!important;cursor:pointer!important;vertical-align:top!important;mso-border-alt:none!important;word-break:break-word!important;margin:0 auto!important;width:auto!important;max-width:200px!important;';
-        
-        // Buscar enlaces con clases que contengan "btn" y convertirlos a botones 100% inline
-        $html = preg_replace_callback(
-            '/<a\b([^>]*class="[^"]*btn[^"]*"[^>]*)>(.*?)<\/a>/is',
-            function($m) use ($button_styles) {
-                $attrs = $m[1];
-                $content = $m[2];
-                
-                // Extraer href del enlace original
-                $href = '';
-                if (preg_match('/\bhref=(["\'])(.*?)\1/i', $attrs, $href_match)) {
-                    $href = $href_match[2];
-                }
-                
-                // Crear botón completamente inline SIN clases CSS
-                $inline_button = sprintf(
-                    '<a href="%s" style="%s">%s</a>',
-                    esc_attr($href),
-                    esc_attr($button_styles),
-                    $content
-                );
-                
-                return $inline_button;
-            },
-            $html
-        );
-        
-        return $html;
-    }
-
-    /**
-     * Asegura que los botones sean siempre visibles con estilos inline completos
-     */
-    private function enforce_button_styles($html) {
-        // Estilos para botones rojos (like Comprar)
-        $button_styles = 'display:inline-block!important;visibility:visible!important;opacity:1!important;background-color:#D94949!important;color:#ffffff!important;padding:12px 22px!important;border-radius:8px!important;font-family:Arial,Helvetica,sans-serif!important;font-weight:700!important;font-size:16px!important;text-decoration:none!important;border:0!important;outline:none!important;text-align:center!important;';
-        
-        // NUEVA ESTRATEGIA: Buscar por contenido "Comprar" en lugar de clases (MÁS ESPECÍFICO)
-        $html = preg_replace_callback(
-            '/<a\b([^>]*)>([^<]*Comprar[^<]*)<\/a>/is',
-            function($m) use ($button_styles) {
-                $attrs = $m[1];
-                $content = $m[2];
-                
-                // Solo procesar si el contenido es específicamente un botón (no navegación)
-                $clean_content = strip_tags($content);
-                $clean_content = preg_replace('/\s+/', ' ', trim($clean_content));
-                
-                // Filtrar falsos positivos - debe ser solo "Comprar" o variantes cercanas
-                if (preg_match('/^(Comprar|Comprar\s+Ahora|Buy\s+Now)$/i', $clean_content)) {
-                    // Aplicar estilos de botón de forma AGRESIVA
-                    if (preg_match('/\sstyle=("|\')(.*?)\1/i', $attrs, $sm)) {
-                        $existing = trim($sm[2]);
-                        $combined = $button_styles . ';' . $existing;
-                        $attrs = preg_replace('/\sstyle=("|\')(.*?)\1/i', ' style="'.$combined.'"', $attrs, 1);
-                    } else {
-                        $attrs .= ' style="' . $button_styles . '"';
-                    }
-                    
-                    return '<a' . $attrs . '>' . $content . '</a>';
-                }
-                
-                // Si no es un botón real, devolver sin cambios
-                return $m[0];
-            },
-            $html
-        );
-        
-        return $html;
-    }
-
-    /**
-     * Fuerza estilos críticos para elementos de navegación (nav-white, dark, etc.)
-     * Gmail es muy estricto con estilos en enlaces de navegación
-     */
-    private function enforce_navigation_styles($html) {
-        // Patrones para elementos de navegación comunes
-        $nav_patterns = [
-            // Enlaces dentro de contenedores con clase nav-white
-            [
-                'container_class' => 'nav-white',
-                'styles' => 'color:#ffffff!important;text-decoration:none!important;font-family:Arial,Helvetica,sans-serif!important;'
-            ],
-            // Enlaces dentro de contenedores con clase dark
-            [
-                'container_class' => 'dark',
-                'styles' => 'color:#ffffff!important;text-decoration:none!important;font-family:Arial,Helvetica,sans-serif!important;'
-            ],
-            // Enlaces dentro de contenedores con clase bg-dark
-            [
-                'container_class' => 'bg-dark',
-                'styles' => 'color:#ffffff!important;text-decoration:none!important;font-family:Arial,Helvetica,sans-serif!important;'
-            ]
-        ];
-
-        foreach ($nav_patterns as $nav_config) {
-            $class = $nav_config['container_class'];
-            $styles = $nav_config['styles'];
-            
-            // Patrón para encontrar contenedores con la clase específica y sus enlaces descendientes
-            $pattern = '#(<[^>]*\bclass=["\'][^"\']*\b' . preg_quote($class, '#') . '\b[^"\']*["\'][^>]*>)(.*?)(</[^>]+>)#is';
-            
-            $html = preg_replace_callback(
-                $pattern,
-                function($m) use ($styles) {
-                    $open_tag = $m[1];
-                    $content = $m[2];
-                    $close_tag = $m[3];
-                    
-                    // Aplicar estilos a todos los enlaces dentro del contenedor
-                    $content = preg_replace_callback(
-                        '#<a\b([^>]*)>#i',
-                        function($link_match) use ($styles) {
-                            $attrs = $link_match[1];
-                            
-                            // Agregar o combinar estilos
-                            if (preg_match('/\sstyle=("|\')(.*?)\1/i', $attrs, $sm)) {
-                                $existing = trim($sm[2]);
-                                $combined = $existing . ($existing && substr($existing, -1) !== ';' ? ';' : '') . $styles;
-                                $attrs = preg_replace('/\sstyle=("|\')(.*?)\1/i', ' style="'.$combined.'"', $attrs, 1);
-                            } else {
-                                $attrs .= ' style="' . esc_attr($styles) . '"';
-                            }
-                            
-                            return '<a' . $attrs . '>';
-                        },
-                        $content
-                    );
-                    
-                    return $open_tag . $content . $close_tag;
-                },
-                $html
-            );
-        }
-        
-        return $html;
-    }
-
-    /**
      * Fuerza la visibilidad del botón en vista previa
      */
     private function force_button_visibility($html) {
@@ -1509,7 +1562,6 @@ JS;
                 text-decoration: none !important;
                 border: 0 !important;
                 outline: none !important;
-                line-height: 1.2 !important;
                 text-align: center !important;
                 cursor: pointer !important;
                 -webkit-appearance: none !important;
@@ -1579,7 +1631,7 @@ JS;
                         $btn_attrs = $btn_match[1];
                         $btn_content = $btn_match[2];
                         
-                        // SOLO aplicar si NO tiene ya display:block (evitar conflictos)
+                        // SOLO aplicar si NO tiene display:block (evitar conflictos)
                         if (!preg_match('/display:\s*block\s*!important/i', $btn_attrs)) {
                             // Estilos de centrado para el botón
                             $btn_center_styles = 'display:block!important;margin:0 auto!important;text-align:center!important;width:auto!important;max-width:200px!important;';
@@ -1646,6 +1698,94 @@ JS;
                     } else {
                         $attrs .= ' style="' . esc_attr($center_styles) . '"';
                     }
+                }
+                
+                return '<a' . $attrs . '>' . $content . '</a>';
+            },
+            $html
+        );
+        
+        return $html;
+    }
+
+    /**
+     * Aplica estilos críticos a botones ANTES del CSS inlining
+     */
+    private function enforce_button_styles_pre_inline($html) {
+        // Estilos críticos para botones que deben aplicarse antes del inlining
+        $button_styles = 'display:inline-block!important;visibility:visible!important;opacity:1!important;background-color:#D94949!important;color:#ffffff!important;padding:12px 22px!important;border-radius:8px!important;font-family:Arial,Helvetica,sans-serif!important;font-weight:700!important;font-size:16px!important;text-decoration:none!important;border:0!important;outline:none!important;text-align:center!important;';
+        
+        // Aplicar a todos los elementos con clase btn
+        $html = preg_replace_callback(
+            '#<a\b([^>]*\bclass=["\'][^"\']*\bbtn[^"\']*["\'][^>]*)>(.*?)</a>#is',
+            function($m) use ($button_styles) {
+                $attrs = $m[1];
+                $content = $m[2];
+                
+                if (preg_match('/\sstyle=(["\'])(.*?)\1/i', $attrs, $sm)) {
+                    $existing = trim($sm[2]);
+                    $combined = $button_styles . ($existing ? ';' . $existing : '');
+                    $attrs = preg_replace('/\sstyle=(["\'])(.*?)\1/i', ' style="' . esc_attr($combined) . '"', $attrs, 1);
+                } else {
+                    $attrs .= ' style="' . esc_attr($button_styles) . '"';
+                }
+                
+                return '<a' . $attrs . '>' . $content . '</a>';
+            },
+            $html
+        );
+        
+        return $html;
+    }
+
+    /**
+     * Aplica estilos críticos a botones DESPUÉS del CSS inlining
+     */
+    private function enforce_button_styles($html) {
+        // Forzar estilos de botones que pueden haberse perdido
+        $button_styles = 'display:inline-block!important;visibility:visible!important;opacity:1!important;background-color:#D94949!important;color:#ffffff!important;text-decoration:none!important;';
+        
+        $html = preg_replace_callback(
+            '#<a\b([^>]*\bclass=["\'][^"\']*\bbtn[^"\']*["\'][^>]*)>(.*?)</a>#is',
+            function($m) use ($button_styles) {
+                $attrs = $m[1];
+                $content = $m[2];
+                
+                if (preg_match('/\sstyle=(["\'])(.*?)\1/i', $attrs, $sm)) {
+                    $existing = trim($sm[2]);
+                    $combined = $existing . ';' . $button_styles;
+                    $attrs = preg_replace('/\sstyle=(["\'])(.*?)\1/i', ' style="' . esc_attr($combined) . '"', $attrs, 1);
+                } else {
+                    $attrs .= ' style="' . esc_attr($button_styles) . '"';
+                }
+                
+                return '<a' . $attrs . '>' . $content . '</a>';
+            },
+            $html
+        );
+        
+        return $html;
+    }
+
+    /**
+     * Aplica estilos críticos para navegación
+     */
+    private function enforce_navigation_styles($html) {
+        // Estilos para elementos de navegación
+        $nav_styles = 'color:#ffffff!important;text-decoration:none!important;font-family:Arial,Helvetica,sans-serif!important;';
+        
+        $html = preg_replace_callback(
+            '#<a\b([^>]*\bclass=["\'][^"\']*\b(nav|navigation)[^"\']*["\'][^>]*)>(.*?)</a>#is',
+            function($m) use ($nav_styles) {
+                $attrs = $m[1];
+                $content = $m[2];
+                
+                if (preg_match('/\sstyle=(["\'])(.*?)\1/i', $attrs, $sm)) {
+                    $existing = trim($sm[2]);
+                    $combined = $existing . ';' . $nav_styles;
+                    $attrs = preg_replace('/\sstyle=(["\'])(.*?)\1/i', ' style="' . esc_attr($combined) . '"', $attrs, 1);
+                } else {
+                    $attrs .= ' style="' . esc_attr($nav_styles) . '"';
                 }
                 
                 return '<a' . $attrs . '>' . $content . '</a>';
@@ -1955,25 +2095,86 @@ JS;
         }
     }
 
-    /*** .env parser ***/
-    private function parse_env_file( $path ){
-        $out = [];
-        $lines = @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        if(!$lines) return $out;
-        foreach($lines as $line){
-            if (strlen($line) === 0 || $line[0]==='#' || strpos($line,'=')===false) continue;
-            list($k,$v) = explode('=', $line, 2);
-            $k = trim($k); $v = trim($v);
-            $v = trim($v, "\"'");
-            $out[$k] = $v;
+    /*** Endpoint para cron externo: /tu-sitio.com/?wec_cron=true&secret=tu_clave_secreta
+     * Permite ejecutar el cron desde sistemas externos de forma segura
+     */
+    public function handle_external_cron() {
+        // Solo procesar si es una petición de cron externo
+        if (!isset($_GET['wec_cron']) || $_GET['wec_cron'] !== 'true') {
+            return;
         }
-        return $out;
+        
+        // Validación de seguridad
+        $secret = $_GET['secret'] ?? '';
+        $expected_secret = defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : 'curren_email_cron_2024';
+        
+        if ($secret !== $expected_secret) {
+            http_response_code(403);
+            header('Content-Type: text/plain; charset=UTF-8');
+            echo "ERROR 403: Clave secreta incorrecta\n";
+            echo "Usa: ?wec_cron=true&secret=tu_clave_secreta\n";
+            exit;
+        }
+        
+        // Log del acceso
+        $debug_info = [
+            'timestamp' => date('Y-m-d H:i:s'),
+            'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'unknown'
+        ];
+        
+        // Ejecutar cron
+        ob_start();
+        $start_time = microtime(true);
+        
+        try {
+            $this->process_queue_cron();
+            $execution_time = round((microtime(true) - $start_time) * 1000, 2);
+            
+            // Verificar estado después de la ejecución
+            global $wpdb;
+            $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
+            $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
+            
+            $pending_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')");
+            $queued_items = $wpdb->get_var("SELECT COUNT(*) FROM {$table_items} WHERE status='queued'");
+            
+            $output = ob_get_clean();
+            
+            // Respuesta exitosa
+            http_response_code(200);
+            header('Content-Type: text/plain; charset=UTF-8');
+            echo "✅ WEC CRON EJECUTADO CORRECTAMENTE\n";
+            echo "⏱️  Tiempo: {$execution_time}ms\n";
+            echo "📧 Trabajos pendientes: {$pending_jobs}\n";
+            echo "📋 Items en cola: {$queued_items}\n";
+            echo "🕐 Hora: " . date('Y-m-d H:i:s') . " (" . date_default_timezone_get() . ")\n";
+            echo "🏠 IP: " . $debug_info['ip'] . "\n";
+            
+            if ($pending_jobs > 0) {
+                echo "\n💡 INFO: Hay trabajos pendientes, el cron debería ejecutarse nuevamente.\n";
+            } else {
+                echo "\n🎉 INFO: No hay trabajos pendientes.\n";
+            }
+            
+        } catch (Exception $e) {
+            ob_end_clean();
+            
+            http_response_code(500);
+            header('Content-Type: text/plain; charset=UTF-8');
+            echo "❌ ERROR EN CRON:\n";
+            echo $e->getMessage() . "\n";
+            echo "🕐 Hora: " . date('Y-m-d H:i:s') . "\n";
+            
+            // Log del error
+            error_log("WEC_EXTERNAL_CRON_ERROR: " . $e->getMessage());
+        }
+        
+        exit;
     }
+
+    // ...existing code...
 }
-
-new WEC_Email_Collector();
-
-endif; // class exists
 
 /* ---------- Página de baja de suscripción ---------- */
 add_shortcode('email_unsubscribe', function() {
@@ -1993,6 +2194,39 @@ add_shortcode('email_unsubscribe', function() {
 
     $wpdb->update($table, ['status' => 'unsubscribed'], ['email' => $email]);
 
-    return '<h2>Has cancelado tu suscripción a los correos de Curren México.</h2>
+    return '<h2>Has cancelado tu suscripción a los correos de Drexora.</h2>
             <p>Puedes volver a unirte cuando quieras 🕒</p>';
+});
+
+endif; // class_exists('WEC_Email_Collector')
+
+/*** Inicializar el plugin ***/
+function wec_init_plugin() {
+    new WEC_Email_Collector();
+}
+add_action('plugins_loaded', 'wec_init_plugin');
+
+/*** Hooks de activación/desactivación ***/
+register_activation_hook(__FILE__, function() {
+    $wec = new WEC_Email_Collector();
+    $wec->create_tables();
+    
+    // Programar cron si no existe
+    if (!wp_next_scheduled(WEC_Email_Collector::CRON_HOOK)) {
+        wp_schedule_event(time(), 'every_five_minutes', WEC_Email_Collector::CRON_HOOK);
+    }
+});
+
+register_deactivation_hook(__FILE__, function() {
+    // Limpiar cron programado
+    wp_clear_scheduled_hook(WEC_Email_Collector::CRON_HOOK);
+});
+
+/*** Intervalos de cron personalizados ***/
+add_filter('cron_schedules', function($schedules) {
+    $schedules['every_five_minutes'] = [
+        'interval' => 5 * MINUTE_IN_SECONDS,
+        'display' => __('Cada 5 minutos')
+    ];
+    return $schedules;
 });
