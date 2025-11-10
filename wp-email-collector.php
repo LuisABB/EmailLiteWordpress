@@ -2209,7 +2209,7 @@ add_action('plugins_loaded', 'wec_init_plugin');
 /*** Hooks de activación/desactivación ***/
 register_activation_hook(__FILE__, function() {
     $wec = new WEC_Email_Collector();
-    $wec->create_tables();
+    $wec->maybe_install_tables();
     
     // Programar cron si no existe
     if (!wp_next_scheduled(WEC_Email_Collector::CRON_HOOK)) {
