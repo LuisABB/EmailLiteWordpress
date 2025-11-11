@@ -281,6 +281,11 @@ final class WEC_Email_Collector {
         .wec-table th,.wec-table td{padding:10px;border-bottom:1px solid #eee;text-align:left}
         .wec-help{color:#6b7280;font-size:12px;margin-top:6px}
         .wec-inline{display:flex;gap:10px;align-items:center}
+        .status-pending{color:#f59e0b;font-weight:600}
+        .status-running{color:#3b82f6;font-weight:600;animation:pulse 2s infinite}
+        .status-done{color:#10b981;font-weight:600}
+        .status-expired{color:#ef4444;font-weight:600}
+        @keyframes pulse{0%{opacity:1}50%{opacity:0.5}100%{opacity:1}}
         ';
     }
 
@@ -478,7 +483,20 @@ JS;
             <?php if($jobs): foreach($jobs as $job): ?>
               <tr>
                 <td>#<?php echo intval($job->id); ?></td>
-                <td><?php echo esc_html($job->status); ?></td>
+                <td>
+                  <?php 
+                  $status_label = $job->status;
+                  $status_class = '';
+                  switch($job->status) {
+                    case 'pending': $status_label = '⏳ Pendiente'; $status_class = 'status-pending'; break;
+                    case 'running': $status_label = '▶️ Ejecutando'; $status_class = 'status-running'; break;
+                    case 'done': $status_label = '✅ Completada'; $status_class = 'status-done'; break;
+                    case 'expired': $status_label = '⚠️ Expirada'; $status_class = 'status-expired'; break;
+                    default: $status_label = esc_html($job->status); break;
+                  }
+                  ?>
+                  <span class="<?php echo esc_attr($status_class); ?>"><?php echo $status_label; ?></span>
+                </td>
                 <td><?php echo esc_html(get_the_title($job->tpl_id)); ?></td>
                 <td><?php echo esc_html($this->format_display_datetime($job->start_at)); ?></td>
                 <td><?php echo intval($job->total); ?></td>
@@ -619,14 +637,73 @@ JS;
     }
 
     /*** Cron: procesar cola ***/
+    /**
+     * Estados de campaña:
+     * - pending: Programada pero no iniciada
+     * - running: En ejecución
+     * - done: Completada exitosamente  
+     * - expired: Venció sin ejecutarse (más de 24h después de la fecha programada)
+     */
     public function process_queue_cron(){
         global $wpdb;
         $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
         $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
 
-        // Obtener campaña pendiente cuya hora haya llegado (comparar con hora CDMX convertida a UTC)
+        // PASO 1: Marcar como expiradas las campañas pendientes de días anteriores
+        // Esto evita que se ejecuten campañas de días pasados
+        $yesterday_end_cdmx = date('Y-m-d 23:59:59', strtotime('-1 day'));
+        $yesterday_end_utc = $this->convert_local_to_mysql($yesterday_end_cdmx);
+        
+        $expired_count = $wpdb->query( $wpdb->prepare(
+            "UPDATE {$table_jobs} 
+             SET status = 'expired' 
+             WHERE status = 'pending' 
+             AND start_at <= %s", 
+             $yesterday_end_utc
+        ) );
+        
+        // Log si se marcaron campañas como expiradas
+        if ($expired_count > 0) {
+            error_log("WEC: Se marcaron {$expired_count} campañas como expiradas (de días anteriores)");
+        }
+
+        // LIMPIEZA: Eliminar campañas expiradas muy antiguas (más de 30 días)
+        // Esto mantiene la BD limpia pero conserva historial reciente
+        $cleanup_date = date('Y-m-d 23:59:59', strtotime('-30 days'));
+        $cleanup_date_utc = $this->convert_local_to_mysql($cleanup_date);
+        
+        $cleanup_count = $wpdb->query( $wpdb->prepare(
+            "DELETE j, i FROM {$table_jobs} j 
+             LEFT JOIN {$table_items} i ON j.id = i.job_id 
+             WHERE j.status = 'expired' 
+             AND j.start_at <= %s", 
+             $cleanup_date_utc
+        ) );
+        
+        if ($cleanup_count > 0) {
+            error_log("WEC: Se eliminaron {$cleanup_count} campañas expiradas antiguas (>30 días)");
+        }
+
+        // PASO 2: Obtener campaña pendiente cuya hora haya llegado HOY específicamente
         $current_time_utc = $this->get_current_time_cdmx();
-        $job = $wpdb->get_row( $wpdb->prepare("SELECT * FROM {$table_jobs} WHERE status IN('pending','running') AND start_at <= %s ORDER BY id ASC LIMIT 1", $current_time_utc ) );
+        
+        // Convertir el inicio y fin del día actual de CDMX a UTC
+        $today_start_cdmx = date('Y-m-d 00:00:00');
+        $today_end_cdmx = date('Y-m-d 23:59:59');
+        $today_start_utc = $this->convert_local_to_mysql($today_start_cdmx);
+        $today_end_utc = $this->convert_local_to_mysql($today_end_cdmx);
+        
+        $job = $wpdb->get_row( $wpdb->prepare(
+            "SELECT * FROM {$table_jobs} 
+             WHERE status IN('pending','running') 
+             AND start_at <= %s 
+             AND start_at >= %s 
+             AND start_at <= %s
+             ORDER BY id ASC LIMIT 1", 
+             $current_time_utc, 
+             $today_start_utc,
+             $today_end_utc
+        ) );
         
         if( ! $job ) {
             return;
@@ -688,7 +765,19 @@ JS;
         }
         
         // Verificar si hay otros trabajos pendientes para procesar
-        $next_job = $wpdb->get_row( $wpdb->prepare("SELECT * FROM {$table_jobs} WHERE status IN('pending','running') AND start_at <= %s AND id != %d ORDER BY id ASC LIMIT 1", $current_time_utc, $job->id ) );
+        $next_job = $wpdb->get_row( $wpdb->prepare(
+            "SELECT * FROM {$table_jobs} 
+             WHERE status IN('pending','running') 
+             AND start_at <= %s 
+             AND start_at >= %s 
+             AND start_at <= %s
+             AND id != %d 
+             ORDER BY id ASC LIMIT 1", 
+             $current_time_utc, 
+             $today_start_utc,
+             $today_end_utc,
+             $job->id 
+        ) );
         if( $next_job ) {
             wp_schedule_single_event( time() + 30, self::CRON_HOOK );
         }
@@ -953,7 +1042,7 @@ JS;
         // Solo configurar en frontend para evitar conflictos en admin
         if (is_admin()) return;
         
-        // Verificar si hay trabajos pendientes
+        // Verificar si hay trabajos pendientes o en ejecución (no expirados)
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
         $pending_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')");
@@ -2138,6 +2227,7 @@ JS;
             
             $pending_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')");
             $queued_items = $wpdb->get_var("SELECT COUNT(*) FROM {$table_items} WHERE status='queued'");
+            $expired_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status='expired'");
             
             $output = ob_get_clean();
             
@@ -2148,6 +2238,9 @@ JS;
             echo "⏱️  Tiempo: {$execution_time}ms\n";
             echo "📧 Trabajos pendientes: {$pending_jobs}\n";
             echo "📋 Items en cola: {$queued_items}\n";
+            if ($expired_jobs > 0) {
+                echo "⚠️  Campañas expiradas: {$expired_jobs}\n";
+            }
             echo "🕐 Hora: " . date('Y-m-d H:i:s') . " (" . date_default_timezone_get() . ")\n";
             echo "🏠 IP: " . $debug_info['ip'] . "\n";
             

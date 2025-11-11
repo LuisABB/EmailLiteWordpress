@@ -6,6 +6,39 @@ Todos los cambios importantes del proyecto serán documentados en este archivo.
 
 ### 🐛 Correcciones
 - **Instalación del plugin**: Cambio de `create_tables()` a `maybe_install_tables()`. Fallaba porque el plugin WP Email Collector intentaba ejecutar un método que ya no existía (create_tables()), y eso provocaba el error fatal.
+### 🐛 Correcciones Críticas
+- **Bug de ejecución diaria**: Corrección del problema donde las campañas programadas se ejecutaban todos los días a la misma hora en lugar de solo en la fecha específica programada
+- **Validación de fecha específica**: Implementación de validación que asegura que las campañas se ejecuten únicamente en el día programado (no solo cuando la hora haya pasado)
+- **Sistema de expiración**: Las campañas pendientes de días anteriores se marcan automáticamente como "expiradas" para prevenir ejecuciones incorrectas
+
+### 🔧 Mejoras del Sistema
+- **Nuevo estado 'expired'**: Las campañas que no se ejecutaron en su fecha programada se marcan como expiradas
+- **Limpieza automática**: Eliminación automática de campañas expiradas de más de 30 días para mantener la base de datos limpia
+- **Logging mejorado**: Registro detallado de operaciones de limpieza y marcado de campañas expiradas
+- **Consultas optimizadas**: Mejora en las queries SQL para incluir validación de rangos de fecha específicos (UTC)
+
+### 🎨 Mejoras de Interfaz
+- **Estados visuales**: Iconos y colores distintivos para cada estado de campaña
+  - ⏳ **Pendiente** (naranja)
+  - ▶️ **Ejecutando** (azul con animación pulsante)
+  - ✅ **Completada** (verde)
+  - ⚠️ **Expirada** (rojo)
+- **CSS mejorado**: Estilos para diferenciación visual de estados con animaciones sutiles
+
+### 📊 Monitoreo Mejorado
+- **Endpoint externo**: El cron externo ahora reporta también el número de campañas expiradas
+- **Dashboard actualizado**: La página de campañas muestra estados más claros y descriptivos
+- **Debugging avanzado**: Mejor información para troubleshooting de problemas de timing
+
+### 🔐 Validaciones de Seguridad
+- **Timezone handling**: Conversión correcta entre CDMX y UTC para todas las validaciones de fecha
+- **Prevención de re-ejecución**: Sistema robusto que previene la ejecución accidental de campañas antiguas
+- **Limpieza de historial**: Mantenimiento automático de la base de datos sin perder datos importantes
+
+### ⚡ Optimizaciones
+- **Queries más eficientes**: Consultas SQL optimizadas con rangos de fecha específicos
+- **Menor carga de BD**: Eliminación automática de registros antiguos innecesarios
+- **Mejor performance**: Reducción de procesamiento innecesario de campañas expiradas
 
 ## [3.0.0] - 2025-10-26 - Sistema Completo y Optimizado
 
