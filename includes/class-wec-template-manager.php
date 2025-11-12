@@ -129,6 +129,7 @@ class WEC_Template_Manager {
             <strong>Placeholders disponibles:</strong><br>
             <code>{{site_name}}</code> - Nombre del sitio<br>
             <code>{{site_url}}</code> - URL del sitio<br>
+            <code>{{site_description}}</code> - Descripción del sitio<br>
             <code>{{admin_email}}</code> - Email del admin<br>
             <code>{{date}}</code> - Fecha actual<br>
             <code>{{current_year}}</code> - Año actual<br>
@@ -315,12 +316,15 @@ class WEC_Template_Manager {
         if (($hook === 'post.php' || $hook === 'post-new.php') && 
             isset($post->post_type) && $post->post_type === self::CPT_TPL) {
             
+            // Asegurar que jQuery esté disponible
+            wp_enqueue_script('jquery');
+            
             // Actualizar estadísticas de contenido via JavaScript
             wp_add_inline_script('jquery', '
                 jQuery(document).ready(function($) {
                     function updateContentStats() {
                         var content = $("#content").val() || "";
-                        var wordCount = content.trim().split(/\s+/).length;
+                        var wordCount = content.trim() === "" ? 0 : content.trim().split(/\s+/).length;
                         var charCount = content.length;
                         $("#wec-content-length").html(
                             "Palabras: " + wordCount + " | Caracteres: " + charCount
@@ -335,7 +339,7 @@ class WEC_Template_Manager {
         }
         
         // Cargar en listado de plantillas
-        if ($hook === 'edit.php' && isset($_GET['post_type']) && $_GET['post_type'] === self::CPT_TPL) {
+        if ($hook === 'edit.php' && isset($_GET['post_type']) && sanitize_key($_GET['post_type']) === self::CPT_TPL) {
             // Asegurar que thickbox esté disponible
             add_thickbox();
             
@@ -520,7 +524,7 @@ class WEC_Template_Manager {
     public function render_template_content($template_id) {
         $post = get_post($template_id);
         if (!$post || $post->post_type !== self::CPT_TPL) {
-            throw new Exception('Plantilla no encontrada.');
+            return new WP_Error('template_not_found', 'Plantilla no encontrada.');
         }
         
         $subject = get_post_meta($template_id, self::META_SUBJECT, true) ?: '(Sin asunto)';

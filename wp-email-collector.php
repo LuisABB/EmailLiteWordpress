@@ -749,7 +749,15 @@ JS;
         }
 
         // Render de plantilla una sola vez
-        list($subject, $html_raw) = $this->render_template_content( $job->tpl_id );
+        $template_result = $this->render_template_content( $job->tpl_id );
+        if (is_wp_error($template_result)) {
+            // Error en la plantilla - marcar job como fallido
+            $wpdb->update($table_jobs, ['status'=>'failed'], ['id'=>$job->id], ['%s'], ['%d']);
+            error_log("WEC: Error al renderizar plantilla {$job->tpl_id} para job {$job->id}: " . $template_result->get_error_message());
+            return;
+        }
+        
+        list($subject, $html_raw) = $template_result;
 
         $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
         $sent = 0; $failed = 0;
@@ -970,7 +978,12 @@ JS;
         $to     = sanitize_email($_POST['wec_test_email'] ?? '');
         if( ! $tpl_id || ! is_email($to) ) wp_die('Datos inválidos.');
 
-        list($subject,$html_raw) = $this->render_template_content($tpl_id);
+        $template_result = $this->render_template_content($tpl_id);
+        if (is_wp_error($template_result)) {
+            wp_die('Error en la plantilla: ' . $template_result->get_error_message());
+        }
+        
+        list($subject,$html_raw) = $template_result;
 
         // Envío REAL: inliner + resets
         $html_final = $this->build_email_html(
@@ -1953,8 +1966,18 @@ JS;
         if ( ! $tpl_id ) wp_die('ID inválido', 400);
         if ( empty($nonce) || ! wp_verify_nonce( $nonce, 'wec_prev_iframe') ) wp_die('Nonce inválido', 403);
 
+        $template_result = $this->render_template_content($tpl_id);
+        if (is_wp_error($template_result)) {
+            status_header(500);
+            echo '<div style="background:#ff0000;color:#fff;padding:20px;font-family:monospace;">';
+            echo '<h2>ERROR EN VISTA PREVIA:</h2>';
+            echo '<pre>'.esc_html($template_result->get_error_message()).'</pre>';
+            echo '</div>';
+            exit;
+        }
+
         try{
-            list($subject,$html) = $this->render_template_content($tpl_id);
+            list($subject,$html) = $template_result;
 
             // PREVIEW: SIN inlining - conservar HTML intacto para vista previa
             $full = $this->build_email_html(
@@ -2000,8 +2023,13 @@ JS;
         }
         if ( ! current_user_can('edit_post', $tpl_id) ) wp_die('No autorizado', 403);
 
+        $template_result = $this->render_template_content($tpl_id);
+        if (is_wp_error($template_result)) {
+            wp_die('Error en vista previa: '.$template_result->get_error_message(), 500);
+        }
+
         try{
-            list($subject,$html) = $this->render_template_content($tpl_id);
+            list($subject,$html) = $template_result;
 
             // PREVIEW HÍBRIDO - inlining agresivo pero conservando estilos para legibilidad
             $full = $this->build_email_html(
@@ -2028,8 +2056,13 @@ JS;
         $tpl_id = intval($_POST['tpl_id'] ?? 0);
         if( ! $tpl_id ) wp_send_json_error('ID inválido',400);
         if( ! current_user_can('edit_post', $tpl_id) ) wp_send_json_error('No autorizado',403);
+        $template_result = $this->render_template_content($tpl_id);
+        if (is_wp_error($template_result)) {
+            wp_send_json_error($template_result->get_error_message(), 500);
+        }
+        
         try {
-            list($subject,$html) = $this->render_template_content($tpl_id);
+            list($subject,$html) = $template_result;
             $full = $this->build_email_html(
                 $html,
                 null,
