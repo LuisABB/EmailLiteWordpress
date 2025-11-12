@@ -10,6 +10,20 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+// Autoloader para las clases WEC
+spl_autoload_register(function($class_name) {
+    if (strpos($class_name, 'WEC_') === 0) {
+        $file_name = 'class-' . strtolower(str_replace('_', '-', $class_name)) . '.php';
+        $file_path = plugin_dir_path(__FILE__) . 'includes/' . $file_name;
+        
+        if (file_exists($file_path)) {
+            require_once $file_path;
+            return true;
+        }
+    }
+    return false;
+});
+
 if ( ! class_exists('WEC_Email_Collector') ) :
 
 final class WEC_Email_Collector {
@@ -42,12 +56,11 @@ final class WEC_Email_Collector {
         
         // Menu & assets
         add_action( 'admin_menu',            [ $this, 'add_menu' ] );
+        add_action( 'admin_menu',            [ $this, 'remove_duplicate_menu' ], 999 );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
-        // CPT Plantillas
-        add_action( 'init',                  [ $this, 'register_cpt_templates' ] );
-        add_action( 'add_meta_boxes',        [ $this, 'add_metaboxes' ] );
-        add_action( 'save_post_' . self::CPT_TPL, [ $this, 'save_subject_metabox' ] );
+        // Inicializar Template Manager (reemplaza las líneas de CPT)
+        add_action( 'init', [ $this, 'init_template_manager' ], 5 );
 
         // AJAX/Preview
         add_action( 'wp_ajax_'  . self::AJAX_ACTION_PREV,   [ $this, 'ajax_preview_template' ] );
@@ -70,8 +83,7 @@ final class WEC_Email_Collector {
         add_action( 'wp', [ $this, 'setup_recurring_cron' ] ); // Cron persistente cada minuto
         add_action( 'init', [ $this, 'handle_external_cron' ] ); // Endpoint para cron externo
 
-        // Install/Upgrades
-        register_activation_hook( __FILE__, [ $this, 'maybe_install_tables' ] );
+        // Upgrades and migrations only
         add_action( 'admin_init', [ $this, 'maybe_migrate_once' ] );
         add_action( 'admin_init', [ $this, 'maybe_add_columns' ] );
 
@@ -91,6 +103,13 @@ final class WEC_Email_Collector {
         if (!get_option('timezone_string')) {
             update_option('timezone_string', 'America/Mexico_City');
         }
+    }
+
+    /**
+     * Inicializa el gestor de plantillas
+     */
+    public function init_template_manager() {
+        WEC_Template_Manager::get_instance();
     }
 
     /**
@@ -377,6 +396,12 @@ JS;
         add_submenu_page( 'wec-campaigns', 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
         add_submenu_page( 'wec-campaigns', 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
         add_submenu_page( 'wec-campaigns', 'Email Templates','Email Templates','manage_options', 'edit.php?post_type='.self::CPT_TPL );
+    }
+
+    public function remove_duplicate_menu() {
+        // Remover el menú principal del CPT que WordPress crea automáticamente
+        // pero mantener nuestro submenú personalizado
+        remove_menu_page('edit.php?post_type=' . self::CPT_TPL);
     }
 
     public function render_campaigns_page(){
@@ -724,7 +749,15 @@ JS;
         }
 
         // Render de plantilla una sola vez
-        list($subject, $html_raw) = $this->render_template_content( $job->tpl_id );
+        $template_result = $this->render_template_content( $job->tpl_id );
+        if (is_wp_error($template_result)) {
+            // Error en la plantilla - marcar job como fallido
+            $wpdb->update($table_jobs, ['status'=>'failed'], ['id'=>$job->id], ['%s'], ['%d']);
+            error_log("WEC: Error al renderizar plantilla {$job->tpl_id} para job {$job->id}: " . $template_result->get_error_message());
+            return;
+        }
+        
+        list($subject, $html_raw) = $template_result;
 
         $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
         $sent = 0; $failed = 0;
@@ -945,7 +978,12 @@ JS;
         $to     = sanitize_email($_POST['wec_test_email'] ?? '');
         if( ! $tpl_id || ! is_email($to) ) wp_die('Datos inválidos.');
 
-        list($subject,$html_raw) = $this->render_template_content($tpl_id);
+        $template_result = $this->render_template_content($tpl_id);
+        if (is_wp_error($template_result)) {
+            wp_die('Error en la plantilla: ' . $template_result->get_error_message());
+        }
+        
+        list($subject,$html_raw) = $template_result;
 
         // Envío REAL: inliner + resets
         $html_final = $this->build_email_html(
@@ -961,80 +999,6 @@ JS;
         $ok = wp_mail( $to, $subject, $html_final, [ 'Content-Type: text/html; charset=UTF-8' ] );
         wp_safe_redirect( admin_url('admin.php?page=wec-smtp&test='.($ok?'ok':'fail')) );
         exit;
-    }
-
-    /*** CPT ***/
-    public function register_cpt_templates(){
-        $labels = [
-            'name'               => 'Email Templates',
-            'singular_name'      => 'Email Template',
-            'add_new'            => 'Añadir nueva',
-            'add_new_item'       => 'Añadir plantilla',
-            'edit_item'          => 'Editar plantilla',
-            'new_item'           => 'Nueva plantilla',
-            'view_item'          => 'Ver plantilla',
-            'search_items'       => 'Buscar plantillas',
-            'not_found'          => 'No se encontraron plantillas',
-            'not_found_in_trash' => 'No hay plantillas en la papelera',
-        ];
-        register_post_type( self::CPT_TPL, [
-            'labels'        => $labels,
-            'public'        => false,
-            'show_ui'       => true,
-            'show_in_menu'  => self::ROOT_MENU_SLUG,
-            'supports'      => [ 'title','editor' ],
-            'capability_type' => 'post',
-            'map_meta_cap'    => true,
-        ] );
-    }
-
-    public function add_metaboxes(){
-        add_meta_box( 'wec_subject_box', 'Asunto del correo', [ $this,'render_subject_metabox' ], self::CPT_TPL, 'side', 'high' );
-        add_meta_box( 'wec_preview_box', 'Vista previa',        [ $this,'render_preview_metabox' ], self::CPT_TPL, 'side', 'high' );
-    }
-
-    public function render_subject_metabox( $post ){
-        wp_nonce_field( 'wec_subject_save', '_wec_subject_nonce' );
-        $subject = get_post_meta( $post->ID, self::META_SUBJECT, true );
-        echo '<p><input type="text" name="wec_subject" class="widefat" value="'.esc_attr($subject).'" placeholder="Ej: No es cualquier reloj, es un Curren ⌚"></p>';
-        echo '<p class="description">Placeholders: <code>{{site_name}}</code>, <code>{{site_url}}</code>, <code>{{admin_email}}</code>, <code>{{date}}</code></p>';
-    }
-
-    public function render_preview_metabox( $post ){
-        echo '<input type="hidden" id="wec_template_id" value="'.esc_attr($post->ID).'">';
-        echo '<p><button id="wec-btn-preview" type="button" class="button button-primary">Vista previa</button></p>';
-        echo $this->render_preview_modal_html();
-    }
-
-    private function render_preview_modal_html(){
-        ob_start(); ?>
-        <div id="wec-preview-modal" style="display:none;">
-          <div id="wec-preview-wrap">
-            <div class="wec-toolbar">
-              <div id="wec-preview-subject">Asunto...</div><span class="sep"></span>
-              <button type="button" class="button" data-wec-size="mobile">Móvil 360</button>
-              <button type="button" class="button" data-wec-size="tablet">Tablet 600</button>
-              <button type="button" class="button" data-wec-size="desktop">Desktop 800</button>
-              <button type="button" class="button" data-wec-size="full">Ancho libre</button>
-            </div>
-            <div class="wec-canvas">
-              <div class="wec-frame-wrap" id="wec-frame-wrap" style="width:800px;">
-                <iframe id="wec-preview-iframe" sandbox="allow-forms allow-same-origin allow-scripts"></iframe>
-                <div class="wec-frame-info" id="wec-frame-info">800px de ancho</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <?php
-        return ob_get_clean();
-    }
-
-    public function save_subject_metabox( $post_id ){
-        if( ! isset($_POST['_wec_subject_nonce']) || ! wp_verify_nonce($_POST['_wec_subject_nonce'],'wec_subject_save') ) return;
-        if( defined('DOING_AUTOSAVE') && DOING_AUTOSAVE ) return;
-        if( ! current_user_can( 'edit_post', $post_id ) ) return;
-        $subject = sanitize_text_field( $_POST['wec_subject'] ?? '' );
-        update_post_meta( $post_id, self::META_SUBJECT, $subject );
     }
 
     /*** Configurar Cron Persistente ***/
@@ -1165,30 +1129,8 @@ JS;
     }
 
     private function render_template_content( $tpl_id ){
-        $post = get_post( $tpl_id );
-        if( ! $post || $post->post_type !== self::CPT_TPL ) throw new \Exception('Plantilla no encontrada.');
-        $subject = get_post_meta( $tpl_id, self::META_SUBJECT, true ) ?: '(Sin asunto)';
-        
-        // Usar el contenido del post de WordPress directamente
-        $html = (string) $post->post_content;
-        
-        // Si el contenido está vacío, mostrar mensaje de ayuda
-        if (empty(trim($html))) {
-            $html = '<div style="text-align:center;padding:40px;font-family:Arial,sans-serif;">
-                <h2>Plantilla vacía</h2>
-                <p>Agrega tu código HTML en el editor de contenido de esta plantilla.</p>
-                <p style="color:#666;">Tip: Pega tu HTML completo del email aquí.</p>
-            </div>';
-        }
-        
-        $repl = [
-            '{{site_name}}'   => get_bloginfo('name'),
-            '{{site_url}}'    => home_url('/'),
-            '{{admin_email}}' => get_option('admin_email'),
-            '{{date}}'        => date_i18n( get_option('date_format') . ' ' . get_option('time_format') ),
-        ];
-        $html = strtr($html, $repl);
-        return [ $subject, $html ];
+        $template_manager = WEC_Template_Manager::get_instance();
+        return $template_manager->render_template_content($tpl_id);
     }
 
     /*** CSS inliner + utilities ***/
@@ -2024,8 +1966,18 @@ JS;
         if ( ! $tpl_id ) wp_die('ID inválido', 400);
         if ( empty($nonce) || ! wp_verify_nonce( $nonce, 'wec_prev_iframe') ) wp_die('Nonce inválido', 403);
 
+        $template_result = $this->render_template_content($tpl_id);
+        if (is_wp_error($template_result)) {
+            status_header(500);
+            echo '<div style="background:#ff0000;color:#fff;padding:20px;font-family:monospace;">';
+            echo '<h2>ERROR EN VISTA PREVIA:</h2>';
+            echo '<pre>'.esc_html($template_result->get_error_message()).'</pre>';
+            echo '</div>';
+            exit;
+        }
+
         try{
-            list($subject,$html) = $this->render_template_content($tpl_id);
+            list($subject,$html) = $template_result;
 
             // PREVIEW: SIN inlining - conservar HTML intacto para vista previa
             $full = $this->build_email_html(
@@ -2071,8 +2023,13 @@ JS;
         }
         if ( ! current_user_can('edit_post', $tpl_id) ) wp_die('No autorizado', 403);
 
+        $template_result = $this->render_template_content($tpl_id);
+        if (is_wp_error($template_result)) {
+            wp_die('Error en vista previa: '.$template_result->get_error_message(), 500);
+        }
+
         try{
-            list($subject,$html) = $this->render_template_content($tpl_id);
+            list($subject,$html) = $template_result;
 
             // PREVIEW HÍBRIDO - inlining agresivo pero conservando estilos para legibilidad
             $full = $this->build_email_html(
@@ -2099,8 +2056,13 @@ JS;
         $tpl_id = intval($_POST['tpl_id'] ?? 0);
         if( ! $tpl_id ) wp_send_json_error('ID inválido',400);
         if( ! current_user_can('edit_post', $tpl_id) ) wp_send_json_error('No autorizado',403);
+        $template_result = $this->render_template_content($tpl_id);
+        if (is_wp_error($template_result)) {
+            wp_send_json_error($template_result->get_error_message(), 500);
+        }
+        
         try {
-            list($subject,$html) = $this->render_template_content($tpl_id);
+            list($subject,$html) = $template_result;
             $full = $this->build_email_html(
                 $html,
                 null,
@@ -2116,55 +2078,30 @@ JS;
         }
     }
 
+    /*** Render modal HTML for preview ***/
+    private function render_preview_modal_html() {
+        return '
+        <div id="wec-preview-modal" style="display:none;">
+            <div id="wec-preview-wrap">
+                <div class="wec-toolbar">
+                    <span id="wec-preview-subject">Vista previa del email</span>
+                    <div class="sep"></div>
+                    <button type="button" class="button" onclick="tb_remove();">Cerrar</button>
+                </div>
+                <div class="wec-canvas">
+                    <div class="wec-frame-wrap">
+                        <div class="wec-frame-info">Vista previa del template</div>
+                        <iframe id="wec-preview-iframe" src="about:blank"></iframe>
+                    </div>
+                </div>
+            </div>
+        </div>';
+    }
+
     /*** DB Install & columns ***/
     public function maybe_install_tables(){
-        global $wpdb;
-        $charset = $wpdb->get_charset_collate();
-        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
-        require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
-        $sql1 = "CREATE TABLE {$table_jobs} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            tpl_id BIGINT UNSIGNED NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'pending',
-            start_at DATETIME NOT NULL,
-            total INT UNSIGNED NOT NULL DEFAULT 0,
-            sent INT UNSIGNED NOT NULL DEFAULT 0,
-            failed INT UNSIGNED NOT NULL DEFAULT 0,
-            rate_per_minute INT UNSIGNED NOT NULL DEFAULT 100,
-            created_at DATETIME NOT NULL,
-            PRIMARY KEY (id),
-            KEY tpl_id (tpl_id),
-            KEY status (status),
-            KEY start_at (start_at)
-        ) {$charset};";
-        $sql2 = "CREATE TABLE {$table_items} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            job_id BIGINT UNSIGNED NOT NULL,
-            email VARCHAR(190) NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'queued',
-            attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
-            error TEXT NULL,
-            PRIMARY KEY (id),
-            KEY job_id (job_id),
-            KEY status (status),
-            KEY email (email)
-        ) {$charset};";
-        dbDelta($sql1);
-        dbDelta($sql2);
-
-        $sql3 = "CREATE TABLE {$wpdb->prefix}".self::DB_TABLE_SUBSCRIBERS." (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            email VARCHAR(190) NOT NULL,
-            status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
-            unsub_token VARCHAR(64) DEFAULT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_wec_email (email),
-            KEY status (status)
-        ) {$charset};";
-        dbDelta($sql3);
+        // Llamar a la función global silenciosa
+        wec_install_tables();
     }
 
     public function maybe_migrate_once(){
@@ -2299,21 +2236,118 @@ function wec_init_plugin() {
 }
 add_action('plugins_loaded', 'wec_init_plugin');
 
-/*** Hooks de activación/desactivación ***/
-register_activation_hook(__FILE__, function() {
-    $wec = new WEC_Email_Collector();
-    $wec->maybe_install_tables();
+/*** Función para instalación silenciosa ***/
+function wec_install_tables() {
+    if (!class_exists('WEC_Email_Collector')) return;
+    
+    // Capturar cualquier output inesperado
+    ob_start();
+    
+    global $wpdb;
+    $charset = $wpdb->get_charset_collate();
+    require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
+    
+    // Tabla jobs
+    $table_jobs = $wpdb->prefix . 'wec_jobs';
+    $sql1 = "CREATE TABLE {$table_jobs} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        tpl_id BIGINT UNSIGNED NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        start_at DATETIME NOT NULL,
+        total INT UNSIGNED NOT NULL DEFAULT 0,
+        sent INT UNSIGNED NOT NULL DEFAULT 0,
+        failed INT UNSIGNED NOT NULL DEFAULT 0,
+        rate_per_minute INT UNSIGNED NOT NULL DEFAULT 100,
+        created_at DATETIME NOT NULL,
+        PRIMARY KEY (id),
+        KEY tpl_id (tpl_id),
+        KEY status (status),
+        KEY start_at (start_at)
+    ) {$charset};";
+    
+    // Tabla items
+    $table_items = $wpdb->prefix . 'wec_job_items';
+    $sql2 = "CREATE TABLE {$table_items} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        job_id BIGINT UNSIGNED NOT NULL,
+        email VARCHAR(190) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'queued',
+        attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        error TEXT NULL,
+        PRIMARY KEY (id),
+        KEY job_id (job_id),
+        KEY status (status),
+        KEY email (email)
+    ) {$charset};";
+    
+    // Para la tabla subscribers, ser MUY conservador para evitar errores
+    $table_subs = $wpdb->prefix . 'wec_subscribers';
+    $table_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table_subs)) == $table_subs;
+    
+    if (!$table_exists) {
+        // Solo crear si no existe absolutamente
+        $result = $wpdb->query("CREATE TABLE IF NOT EXISTS {$table_subs} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            email VARCHAR(190) NOT NULL,
+            status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
+            unsub_token VARCHAR(64) DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uniq_email (email)
+        ) {$charset}");
+        
+        if ($result === false) {
+            // Si falla la creación, registrar error pero continuar
+            error_log('WEC: Error creating subscribers table: ' . $wpdb->last_error);
+        }
+    }
+    // Si la tabla existe, NO TOCAR NADA para evitar problemas de índices
+    
+    // Ejecutar las otras tablas sin output
+    @dbDelta($sql1);
+    @dbDelta($sql2);
     
     // Programar cron si no existe
-    if (!wp_next_scheduled(WEC_Email_Collector::CRON_HOOK)) {
-        wp_schedule_event(time(), 'every_five_minutes', WEC_Email_Collector::CRON_HOOK);
+    if (!wp_next_scheduled('wec_process_queue')) {
+        wp_schedule_event(time(), 'every_five_minutes', 'wec_process_queue');
     }
-});
+    
+    // Marcar versión
+    update_option('wec_db_ver', '3');
+    
+    // Limpiar cualquier output
+    ob_end_clean();
+}
+
+/*** Hooks de activación/desactivación ***/
+register_activation_hook(__FILE__, 'wec_install_tables');
 
 register_deactivation_hook(__FILE__, function() {
-    // Limpiar cron programado
-    wp_clear_scheduled_hook(WEC_Email_Collector::CRON_HOOK);
+    wp_clear_scheduled_hook('wec_process_queue');
 });
+
+/*** Función alternativa para casos problemáticos - USAR CON CUIDADO ***/
+function wec_force_recreate_subscribers_table() {
+    global $wpdb;
+    $charset = $wpdb->get_charset_collate();
+    $table_subs = $wpdb->prefix . 'wec_subscribers';
+    
+    // ADVERTENCIA: Esto eliminará todos los datos de suscriptores
+    $wpdb->query("DROP TABLE IF EXISTS {$table_subs}");
+    
+    // Crear tabla limpia
+    $wpdb->query("CREATE TABLE {$table_subs} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        email VARCHAR(190) NOT NULL,
+        status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
+        unsub_token VARCHAR(64) DEFAULT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_email (email)
+    ) {$charset}");
+}
 
 /*** Intervalos de cron personalizados ***/
 add_filter('cron_schedules', function($schedules) {
