@@ -723,22 +723,6 @@ JS;
              $today_end_utc
         ) );
         
-        check_admin_referer( 'wec_campaign_update_'.$job_id );
-        $tpl_id = intval($_POST['tpl_id'] ?? 0);
-        $start_at = sanitize_text_field($_POST['start_at'] ?? '');
-        $rate_per_min = max(1, intval($_POST['rate_per_minute'] ?? 100));
-
-        if(!$job_id || !$tpl_id) wp_die('Datos incompletos.');
-
-        global $wpdb;
-        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $data = [ 'tpl_id'=>$tpl_id, 'rate_per_minute'=>$rate_per_min ];
-        $fmt  = [ '%d','%d' ];
-        if($start_at !== ''){ 
-            // Convertir fecha de CDMX a UTC para almacenar
-            $data['start_at'] = $this->convert_local_to_mysql($start_at); 
-            $fmt[] = '%s'; 
-        }
         if( ! $job ) {
             return;
         }
@@ -2054,6 +2038,26 @@ JS;
         }
     }
 
+    /*** Render modal HTML for preview ***/
+    private function render_preview_modal_html() {
+        return '
+        <div id="wec-preview-modal" style="display:none;">
+            <div id="wec-preview-wrap">
+                <div class="wec-toolbar">
+                    <span id="wec-preview-subject">Vista previa del email</span>
+                    <div class="sep"></div>
+                    <button type="button" class="button" onclick="tb_remove();">Cerrar</button>
+                </div>
+                <div class="wec-canvas">
+                    <div class="wec-frame-wrap">
+                        <div class="wec-frame-info">Vista previa del template</div>
+                        <iframe id="wec-preview-iframe" src="about:blank"></iframe>
+                    </div>
+                </div>
+            </div>
+        </div>';
+    }
+
     /*** DB Install & columns ***/
     public function maybe_install_tables(){
         // Llamar a la función global silenciosa
@@ -2233,23 +2237,35 @@ function wec_install_tables() {
         KEY email (email)
     ) {$charset};";
     
-    // Tabla subscribers (simplificada)
+    // Para la tabla subscribers, verificar si existe primero
     $table_subs = $wpdb->prefix . 'wec_subscribers';
-    $sql3 = "CREATE TABLE {$table_subs} (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-        email VARCHAR(190) NOT NULL,
-        status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
-        unsub_token VARCHAR(64) DEFAULT NULL,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (id),
-        UNIQUE KEY uniq_email (email)
-    ) {$charset};";
+    $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table_subs}'") == $table_subs;
     
-    // Ejecutar sin output
+    if (!$table_exists) {
+        // Crear tabla nueva con estructura correcta
+        $sql3 = "CREATE TABLE {$table_subs} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            email VARCHAR(190) NOT NULL,
+            status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
+            unsub_token VARCHAR(64) DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uniq_email (email)
+        ) {$charset};";
+        @dbDelta($sql3);
+    } else {
+        // La tabla existe, verificar si necesita el índice único
+        $index_exists = $wpdb->get_var("SHOW INDEX FROM {$table_subs} WHERE Key_name = 'uniq_email'");
+        if (!$index_exists) {
+            // Solo agregar el índice si no existe
+            $wpdb->query("ALTER TABLE {$table_subs} ADD UNIQUE KEY uniq_email (email)");
+        }
+    }
+    
+    // Ejecutar las otras tablas sin output
     @dbDelta($sql1);
     @dbDelta($sql2);
-    @dbDelta($sql3);
     
     // Programar cron si no existe
     if (!wp_next_scheduled('wec_process_queue')) {
