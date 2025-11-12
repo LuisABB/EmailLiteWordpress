@@ -2,7 +2,7 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
-## [3.0.1] - 2025-11-09 - Corrección de Instalación
+## [4.0.0] - 2025-11-09 - Corrección de Instalación
 
 ### 🐛 Correcciones
 - **Instalación del plugin**: Cambio de `create_tables()` a `maybe_install_tables()`. Fallaba porque el plugin WP Email Collector intentaba ejecutar un método que ya no existía (create_tables()), y eso provocaba el error fatal.
