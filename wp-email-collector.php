@@ -10,6 +10,20 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+// Autoloader para las clases WEC
+spl_autoload_register(function($class_name) {
+    if (strpos($class_name, 'WEC_') === 0) {
+        $file_name = 'class-' . strtolower(str_replace('_', '-', $class_name)) . '.php';
+        $file_path = plugin_dir_path(__FILE__) . 'includes/' . $file_name;
+        
+        if (file_exists($file_path)) {
+            require_once $file_path;
+            return true;
+        }
+    }
+    return false;
+});
+
 if ( ! class_exists('WEC_Email_Collector') ) :
 
 final class WEC_Email_Collector {
@@ -44,10 +58,8 @@ final class WEC_Email_Collector {
         add_action( 'admin_menu',            [ $this, 'add_menu' ] );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
-        // CPT Plantillas
-        add_action( 'init',                  [ $this, 'register_cpt_templates' ] );
-        add_action( 'add_meta_boxes',        [ $this, 'add_metaboxes' ] );
-        add_action( 'save_post_' . self::CPT_TPL, [ $this, 'save_subject_metabox' ] );
+        // Inicializar Template Manager (reemplaza las líneas de CPT)
+        add_action( 'init', [ $this, 'init_template_manager' ], 5 );
 
         // AJAX/Preview
         add_action( 'wp_ajax_'  . self::AJAX_ACTION_PREV,   [ $this, 'ajax_preview_template' ] );
@@ -91,6 +103,13 @@ final class WEC_Email_Collector {
         if (!get_option('timezone_string')) {
             update_option('timezone_string', 'America/Mexico_City');
         }
+    }
+
+    /**
+     * Inicializa el gestor de plantillas
+     */
+    public function init_template_manager() {
+        WEC_Template_Manager::get_instance();
     }
 
     /**
@@ -705,6 +724,22 @@ JS;
              $today_end_utc
         ) );
         
+        check_admin_referer( 'wec_campaign_update_'.$job_id );
+        $tpl_id = intval($_POST['tpl_id'] ?? 0);
+        $start_at = sanitize_text_field($_POST['start_at'] ?? '');
+        $rate_per_min = max(1, intval($_POST['rate_per_minute'] ?? 100));
+
+        if(!$job_id || !$tpl_id) wp_die('Datos incompletos.');
+
+        global $wpdb;
+        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
+        $data = [ 'tpl_id'=>$tpl_id, 'rate_per_minute'=>$rate_per_min ];
+        $fmt  = [ '%d','%d' ];
+        if($start_at !== ''){ 
+            // Convertir fecha de CDMX a UTC para almacenar
+            $data['start_at'] = $this->convert_local_to_mysql($start_at); 
+            $fmt[] = '%s'; 
+        }
         if( ! $job ) {
             return;
         }
@@ -963,80 +998,6 @@ JS;
         exit;
     }
 
-    /*** CPT ***/
-    public function register_cpt_templates(){
-        $labels = [
-            'name'               => 'Email Templates',
-            'singular_name'      => 'Email Template',
-            'add_new'            => 'Añadir nueva',
-            'add_new_item'       => 'Añadir plantilla',
-            'edit_item'          => 'Editar plantilla',
-            'new_item'           => 'Nueva plantilla',
-            'view_item'          => 'Ver plantilla',
-            'search_items'       => 'Buscar plantillas',
-            'not_found'          => 'No se encontraron plantillas',
-            'not_found_in_trash' => 'No hay plantillas en la papelera',
-        ];
-        register_post_type( self::CPT_TPL, [
-            'labels'        => $labels,
-            'public'        => false,
-            'show_ui'       => true,
-            'show_in_menu'  => self::ROOT_MENU_SLUG,
-            'supports'      => [ 'title','editor' ],
-            'capability_type' => 'post',
-            'map_meta_cap'    => true,
-        ] );
-    }
-
-    public function add_metaboxes(){
-        add_meta_box( 'wec_subject_box', 'Asunto del correo', [ $this,'render_subject_metabox' ], self::CPT_TPL, 'side', 'high' );
-        add_meta_box( 'wec_preview_box', 'Vista previa',        [ $this,'render_preview_metabox' ], self::CPT_TPL, 'side', 'high' );
-    }
-
-    public function render_subject_metabox( $post ){
-        wp_nonce_field( 'wec_subject_save', '_wec_subject_nonce' );
-        $subject = get_post_meta( $post->ID, self::META_SUBJECT, true );
-        echo '<p><input type="text" name="wec_subject" class="widefat" value="'.esc_attr($subject).'" placeholder="Ej: No es cualquier reloj, es un Curren ⌚"></p>';
-        echo '<p class="description">Placeholders: <code>{{site_name}}</code>, <code>{{site_url}}</code>, <code>{{admin_email}}</code>, <code>{{date}}</code></p>';
-    }
-
-    public function render_preview_metabox( $post ){
-        echo '<input type="hidden" id="wec_template_id" value="'.esc_attr($post->ID).'">';
-        echo '<p><button id="wec-btn-preview" type="button" class="button button-primary">Vista previa</button></p>';
-        echo $this->render_preview_modal_html();
-    }
-
-    private function render_preview_modal_html(){
-        ob_start(); ?>
-        <div id="wec-preview-modal" style="display:none;">
-          <div id="wec-preview-wrap">
-            <div class="wec-toolbar">
-              <div id="wec-preview-subject">Asunto...</div><span class="sep"></span>
-              <button type="button" class="button" data-wec-size="mobile">Móvil 360</button>
-              <button type="button" class="button" data-wec-size="tablet">Tablet 600</button>
-              <button type="button" class="button" data-wec-size="desktop">Desktop 800</button>
-              <button type="button" class="button" data-wec-size="full">Ancho libre</button>
-            </div>
-            <div class="wec-canvas">
-              <div class="wec-frame-wrap" id="wec-frame-wrap" style="width:800px;">
-                <iframe id="wec-preview-iframe" sandbox="allow-forms allow-same-origin allow-scripts"></iframe>
-                <div class="wec-frame-info" id="wec-frame-info">800px de ancho</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <?php
-        return ob_get_clean();
-    }
-
-    public function save_subject_metabox( $post_id ){
-        if( ! isset($_POST['_wec_subject_nonce']) || ! wp_verify_nonce($_POST['_wec_subject_nonce'],'wec_subject_save') ) return;
-        if( defined('DOING_AUTOSAVE') && DOING_AUTOSAVE ) return;
-        if( ! current_user_can( 'edit_post', $post_id ) ) return;
-        $subject = sanitize_text_field( $_POST['wec_subject'] ?? '' );
-        update_post_meta( $post_id, self::META_SUBJECT, $subject );
-    }
-
     /*** Configurar Cron Persistente ***/
     public function setup_recurring_cron() {
         // Solo configurar en frontend para evitar conflictos en admin
@@ -1165,30 +1126,35 @@ JS;
     }
 
     private function render_template_content( $tpl_id ){
-        $post = get_post( $tpl_id );
-        if( ! $post || $post->post_type !== self::CPT_TPL ) throw new \Exception('Plantilla no encontrada.');
-        $subject = get_post_meta( $tpl_id, self::META_SUBJECT, true ) ?: '(Sin asunto)';
-        
-        // Usar el contenido del post de WordPress directamente
-        $html = (string) $post->post_content;
-        
-        // Si el contenido está vacío, mostrar mensaje de ayuda
-        if (empty(trim($html))) {
-            $html = '<div style="text-align:center;padding:40px;font-family:Arial,sans-serif;">
-                <h2>Plantilla vacía</h2>
-                <p>Agrega tu código HTML en el editor de contenido de esta plantilla.</p>
-                <p style="color:#666;">Tip: Pega tu HTML completo del email aquí.</p>
-            </div>';
-        }
-        
-        $repl = [
-            '{{site_name}}'   => get_bloginfo('name'),
-            '{{site_url}}'    => home_url('/'),
-            '{{admin_email}}' => get_option('admin_email'),
-            '{{date}}'        => date_i18n( get_option('date_format') . ' ' . get_option('time_format') ),
-        ];
-        $html = strtr($html, $repl);
-        return [ $subject, $html ];
+        $template_manager = WEC_Template_Manager::get_instance();
+        return $template_manager->render_template_content($tpl_id);
+    }
+
+    /**
+     * Wrapper para el HTML del modal de vista previa
+     * Delegado al Template Manager
+     */
+    private function render_preview_modal_html() {
+        ob_start(); ?>
+        <div id="wec-preview-modal" style="display:none;">
+            <div id="wec-preview-wrap">
+                <div class="wec-toolbar">
+                    <div id="wec-preview-subject">Asunto...</div><span class="sep"></span>
+                    <button type="button" class="button" data-wec-size="mobile">📱 Móvil 360</button>
+                    <button type="button" class="button" data-wec-size="tablet">📟 Tablet 600</button>
+                    <button type="button" class="button" data-wec-size="desktop">💻 Desktop 800</button>
+                    <button type="button" class="button" data-wec-size="full">🖥️ Ancho libre</button>
+                </div>
+                <div class="wec-canvas">
+                    <div class="wec-frame-wrap" id="wec-frame-wrap" style="width:800px;">
+                        <iframe id="wec-preview-iframe" sandbox="allow-forms allow-same-origin allow-scripts"></iframe>
+                        <div class="wec-frame-info" id="wec-frame-info">800px de ancho</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php
+        return ob_get_clean();
     }
 
     /*** CSS inliner + utilities ***/
