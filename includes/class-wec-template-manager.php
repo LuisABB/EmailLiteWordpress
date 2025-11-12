@@ -67,7 +67,7 @@ class WEC_Template_Manager {
             'labels'              => $labels,
             'public'              => false,
             'show_ui'             => true,
-            'show_in_menu'        => 'wec-campaigns', // Mantener bajo el menú principal
+            'show_in_menu'        => false, // Cambiado a false para evitar duplicados
             'supports'            => ['title', 'editor'],
             'capability_type'     => 'post',
             'map_meta_cap'        => true,
@@ -295,7 +295,7 @@ class WEC_Template_Manager {
                 ?>
                 <div class="template-actions">
                     <button type="button" 
-                            class="button button-small wec-btn-preview" 
+                            class="button button-small wec-template-preview-btn" 
                             data-template-id="<?php echo esc_attr($post_id); ?>">
                         📧 Vista previa
                     </button>
@@ -336,22 +336,157 @@ class WEC_Template_Manager {
         
         // Cargar en listado de plantillas
         if ($hook === 'edit.php' && isset($_GET['post_type']) && $_GET['post_type'] === self::CPT_TPL) {
+            // Asegurar que thickbox esté disponible
+            add_thickbox();
+            
+            // Localizar script con variables necesarias
+            wp_enqueue_script('jquery');
+            wp_localize_script('jquery', 'WEC_AJAX', [
+                'ajax_url'      => admin_url('admin-ajax.php'),
+                'iframe_action' => 'wec_preview_iframe_html',
+                'preview_nonce' => wp_create_nonce('wec_prev_iframe'),
+            ]);
+            
             wp_add_inline_script('jquery', '
                 jQuery(document).ready(function($) {
                     // Hacer que los botones de vista previa funcionen en el listado
-                    $(document).on("click", ".wec-btn-preview", function(e) {
+                    $(document).on("click", ".wec-template-preview-btn", function(e) {
                         e.preventDefault();
+                        console.log("Template preview button clicked in template list");
+                        
                         var templateId = $(this).data("template-id");
-                        if (templateId) {
-                            // Abrir vista previa (esto se conectará con el sistema existente)
-                            console.log("Preview template:", templateId);
+                        console.log("Template ID from data attribute:", templateId);
+                        
+                        if (!templateId) {
+                            alert("No se pudo obtener el ID de la plantilla.");
+                            return;
                         }
+                        
+                        // Verificar que WEC_AJAX esté disponible
+                        if (typeof WEC_AJAX === "undefined") {
+                            alert("Sistema de vista previa no disponible. Recarga la página.");
+                            console.error("WEC_AJAX not defined");
+                            return;
+                        }
+                        
+                        // Abrir la vista previa usando el sistema principal
+                        tb_show("Vista previa de plantilla #" + templateId, "#TB_inline?height=700&width=1000&inlineId=wec-preview-modal");
+                        
+                        // Configurar el iframe con mensaje de carga apropiado
+                        var $f = $("#wec-preview-iframe");
+                        if ($f.length === 0) {
+                            console.error("Preview iframe not found");
+                            alert("Error: No se encontró el iframe de vista previa.");
+                            return;
+                        }
+                        
+                        // Configurar tamaño inicial
+                        $("#wec-frame-wrap").css("width", "800px");
+                        $("#wec-frame-info").text("800px de ancho");
+                        
+                        var di = $f[0].contentDocument || $f[0].contentWindow.document;
+                        if (di) { 
+                            di.open(); 
+                            di.write("<!doctype html><html><body style=\"font-family:Arial,sans-serif;padding:40px;color:#333;text-align:center;\"><div style=\"background:#f0f8ff;padding:30px;border-radius:10px;border:2px solid #4a90e2;\"><h3 style=\"margin:0;color:#4a90e2;\">🔄 Cargando vista previa...</h3><p style=\"margin:10px 0 0 0;color:#666;\">Preparando el contenido de la plantilla #" + templateId + "</p></div></body></html>"); 
+                            di.close(); 
+                        }
+                        
+                        // Construir URL de vista previa
+                        var url = WEC_AJAX.ajax_url
+                                + "?action=" + encodeURIComponent(WEC_AJAX.iframe_action)
+                                + "&wec_nonce=" + encodeURIComponent(WEC_AJAX.preview_nonce)
+                                + "&tpl_id=" + encodeURIComponent(templateId);
+                        
+                        console.log("Preview URL:", url);
+                        
+                        // Cargar contenido del iframe
+                        $.get(url).done(function(html){
+                            console.log("Preview HTML received, length:", html.length);
+                            
+                            // Actualizar el título del asunto en la toolbar
+                            $("#wec-preview-subject").text("Vista previa de plantilla #" + templateId);
+                            
+                            var d = $f[0].contentDocument || $f[0].contentWindow.document;
+                            try{ 
+                                d.open(); 
+                                d.write(html); 
+                                d.close(); 
+                            } catch(err) {
+                                console.error("Error writing to iframe:", err);
+                                var blob = new Blob([html], {type: "text/html"});
+                                $f.attr("src", URL.createObjectURL(blob));
+                            }
+                        }).fail(function(xhr){
+                            console.error("Preview failed:", xhr);
+                            var d = $f[0].contentDocument || $f[0].contentWindow.document;
+                            var errorMsg = "Error al cargar la vista previa";
+                            var details = "";
+                            
+                            if (xhr.status === 403) {
+                                details = "Permisos insuficientes para ver la plantilla.";
+                            } else if (xhr.status === 404) {
+                                details = "La plantilla no existe o fue eliminada.";
+                            } else if (xhr.status === 500) {
+                                details = "Error interno del servidor.";
+                            } else {
+                                details = "Código de error: " + xhr.status;
+                            }
+                            
+                            if (d) { 
+                                d.open(); 
+                                d.write("<div style=\"font-family:Arial,sans-serif;padding:40px;color:#333;text-align:center;\"><div style=\"background:#ffe6e6;padding:30px;border-radius:10px;border:2px solid #e74c3c;\"><h3 style=\"margin:0;color:#e74c3c;\">❌ " + errorMsg + "</h3><p style=\"margin:10px 0 0 0;color:#666;\">" + details + "</p><p style=\"margin:20px 0 0 0;\"><button onclick=\"tb_remove();\" style=\"background:#e74c3c;color:white;border:0;padding:8px 16px;border-radius:4px;cursor:pointer;\">Cerrar</button></p></div></div>"); 
+                                d.close(); 
+                            }
+                        });
                     });
                 });
             ');
+            
+            // Agregar el modal de vista previa si no existe
+            add_action('admin_footer', [$this, 'add_preview_modal_to_template_list']);
         }
     }
     
+    /**
+     * Agrega el modal de vista previa a la lista de plantillas
+     */
+    public function add_preview_modal_to_template_list() {
+        echo $this->render_preview_modal_html();
+        
+        // Agregar estilos CSS necesarios
+        ?>
+        <style type="text/css">
+        #TB_window{width:1080px!important;max-width:95vw!important;height:85vh!important;margin-left:calc(-540px + 0.5vw)!important}
+        #TB_ajaxContent{width:100%!important;height:calc(85vh - 50px)!important;padding:0!important;overflow:hidden!important}
+        #wec-preview-wrap{display:flex;flex-direction:column;height:100%;background:#f3f4f6}
+        .wec-toolbar{display:flex;gap:.5rem;align-items:center;padding:10px;border-bottom:1px solid #e5e7eb;background:#fff;position:sticky;top:0;z-index:1}
+        .wec-toolbar .button{line-height:28px;height:28px}
+        .wec-toolbar .sep{flex:1 1 auto}
+        #wec-preview-subject{font-weight:600;color:#111827}
+        .wec-canvas{display:flex;justify-content:center;align-items:flex-start;padding:20px;overflow:auto;height:100%}
+        .wec-frame-wrap{background:#fff;box-shadow:0 10px 25px rgba(0,0,0,.12);border-radius:10px}
+        .wec-frame-info{text-align:center;font-size:12px;color:#6b7280;padding:6px 0}
+        #wec-preview-iframe{display:block;border:0;width:100%;height:calc(75vh - 60px);border-radius:10px}
+        </style>
+        
+        <script type="text/javascript">
+        jQuery(function($){
+          function setFrameWidth(mode){
+            var w=800;
+            if(mode==='mobile')w=360;
+            else if(mode==='tablet')w=600;
+            else if(mode==='desktop')w=800;
+            else if(mode==='full')w=Math.min(window.innerWidth*0.9,1000);
+            $('#wec-frame-wrap').css('width',w+'px');
+            $('#wec-frame-info').text(w+'px de ancho');
+          }
+          
+          $(document).off('click.wecsize').on('click.wecsize','[data-wec-size]',function(){ setFrameWidth($(this).data('wec-size')); });
+        });
+        </script>
+        <?php
+    }
+
     /**
      * Obtiene el HTML del modal de vista previa
      */

@@ -56,6 +56,7 @@ final class WEC_Email_Collector {
         
         // Menu & assets
         add_action( 'admin_menu',            [ $this, 'add_menu' ] );
+        add_action( 'admin_menu',            [ $this, 'remove_duplicate_menu' ], 999 );
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_admin_assets' ] );
 
         // Inicializar Template Manager (reemplaza las líneas de CPT)
@@ -395,6 +396,12 @@ JS;
         add_submenu_page( 'wec-campaigns', 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
         add_submenu_page( 'wec-campaigns', 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
         add_submenu_page( 'wec-campaigns', 'Email Templates','Email Templates','manage_options', 'edit.php?post_type='.self::CPT_TPL );
+    }
+
+    public function remove_duplicate_menu() {
+        // Remover el menú principal del CPT que WordPress crea automáticamente
+        // pero mantener nuestro submenú personalizado
+        remove_menu_page('edit.php?post_type=' . self::CPT_TPL);
     }
 
     public function render_campaigns_page(){
@@ -2200,6 +2207,9 @@ add_action('plugins_loaded', 'wec_init_plugin');
 function wec_install_tables() {
     if (!class_exists('WEC_Email_Collector')) return;
     
+    // Capturar cualquier output inesperado
+    ob_start();
+    
     global $wpdb;
     $charset = $wpdb->get_charset_collate();
     require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
@@ -2237,13 +2247,13 @@ function wec_install_tables() {
         KEY email (email)
     ) {$charset};";
     
-    // Para la tabla subscribers, verificar si existe primero
+    // Para la tabla subscribers, ser MUY conservador para evitar errores
     $table_subs = $wpdb->prefix . 'wec_subscribers';
-    $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table_subs}'") == $table_subs;
+    $table_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table_subs)) == $table_subs;
     
     if (!$table_exists) {
-        // Crear tabla nueva con estructura correcta
-        $sql3 = "CREATE TABLE {$table_subs} (
+        // Solo crear si no existe absolutamente
+        $result = $wpdb->query("CREATE TABLE IF NOT EXISTS {$table_subs} (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             email VARCHAR(190) NOT NULL,
             status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
@@ -2252,16 +2262,14 @@ function wec_install_tables() {
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             UNIQUE KEY uniq_email (email)
-        ) {$charset};";
-        @dbDelta($sql3);
-    } else {
-        // La tabla existe, verificar si necesita el índice único
-        $index_exists = $wpdb->get_var("SHOW INDEX FROM {$table_subs} WHERE Key_name = 'uniq_email'");
-        if (!$index_exists) {
-            // Solo agregar el índice si no existe
-            $wpdb->query("ALTER TABLE {$table_subs} ADD UNIQUE KEY uniq_email (email)");
+        ) {$charset}");
+        
+        if ($result === false) {
+            // Si falla la creación, registrar error pero continuar
+            error_log('WEC: Error creating subscribers table: ' . $wpdb->last_error);
         }
     }
+    // Si la tabla existe, NO TOCAR NADA para evitar problemas de índices
     
     // Ejecutar las otras tablas sin output
     @dbDelta($sql1);
@@ -2274,6 +2282,9 @@ function wec_install_tables() {
     
     // Marcar versión
     update_option('wec_db_ver', '3');
+    
+    // Limpiar cualquier output
+    ob_end_clean();
 }
 
 /*** Hooks de activación/desactivación ***/
@@ -2282,6 +2293,28 @@ register_activation_hook(__FILE__, 'wec_install_tables');
 register_deactivation_hook(__FILE__, function() {
     wp_clear_scheduled_hook('wec_process_queue');
 });
+
+/*** Función alternativa para casos problemáticos - USAR CON CUIDADO ***/
+function wec_force_recreate_subscribers_table() {
+    global $wpdb;
+    $charset = $wpdb->get_charset_collate();
+    $table_subs = $wpdb->prefix . 'wec_subscribers';
+    
+    // ADVERTENCIA: Esto eliminará todos los datos de suscriptores
+    $wpdb->query("DROP TABLE IF EXISTS {$table_subs}");
+    
+    // Crear tabla limpia
+    $wpdb->query("CREATE TABLE {$table_subs} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        email VARCHAR(190) NOT NULL,
+        status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
+        unsub_token VARCHAR(64) DEFAULT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_email (email)
+    ) {$charset}");
+}
 
 /*** Intervalos de cron personalizados ***/
 add_filter('cron_schedules', function($schedules) {

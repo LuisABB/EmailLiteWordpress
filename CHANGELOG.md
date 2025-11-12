@@ -2,6 +2,42 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
+## [5.0.0] - 2025-11-11 - Refactorización y Mejoras UX
+
+### 🔄 Refactoring Arquitectura
+- **Separación de clases**: Creación del archivo `class-wec-template-manager.php` independiente para gestión de plantillas
+- **Template Manager**: Nueva clase `WEC_Template_Manager` con responsabilidades específicas del sistema de plantillas
+- **Autoloader mejorado**: Sistema automático de carga de clases WEC para mejor organización del código
+- **Singleton pattern**: Implementación de patrón Singleton para el Template Manager
+
+### 🔧 Mejoras del Sistema de Plantillas
+- **Metaboxes organizados**: 
+  - Asunto del correo (con placeholders disponibles)
+  - Vista previa (con estadísticas de contenido)
+  - Información de la plantilla (uso, fechas, estado)
+- **Columnas personalizadas**: Lista de plantillas con columnas de Asunto, Uso y Acciones
+- **Estadísticas en tiempo real**: Contador de palabras y caracteres que se actualiza al escribir
+- **Validación completa**: Sistema robusto de validación antes de usar plantillas
+
+### ⚡ Optimizaciones de Performance
+- **Carga condicional**: Assets JavaScript/CSS solo se cargan en páginas relevantes
+- **Separación de responsabilidades**: Template Manager independiente reduce la carga del archivo principal
+- **Modal optimizado**: Sistema de vista previa más eficiente con menos conflictos
+- **Consultas BD optimizadas**: Verificación de existencia de tablas antes de consultas
+
+### 🔐 Mejoras de Seguridad
+- **Nonces específicos**: Sistema de nonces independiente para plantillas (`wec_prev_iframe`)
+- **Capacidades validadas**: Verificación de permisos específicos para plantillas
+- **Sanitización mejorada**: Procesamiento seguro de datos de plantillas
+- **Autoloading seguro**: Validación de clases antes de cargar archivos
+
+### 🛠️ Funcionalidades Técnicas Nuevas
+- **Sistema de plantillas por defecto**: Contenido automático para plantillas vacías
+- **Variables de plantilla**: Sistema expandido de placeholders (site_name, current_year, etc.)
+- **Contador de uso**: Tracking de cuántas campañas usan cada plantilla
+- **Estados visuales**: Indicadores claros de publicado/borrador con estilos distintivos
+- **Ejemplo integrado**: Función para crear plantillas de muestra automáticamente
+
 ## [4.0.0] - 2025-11-09 - Corrección de Instalación
 
 ### 🐛 Correcciones
