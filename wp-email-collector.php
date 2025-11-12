@@ -82,8 +82,7 @@ final class WEC_Email_Collector {
         add_action( 'wp', [ $this, 'setup_recurring_cron' ] ); // Cron persistente cada minuto
         add_action( 'init', [ $this, 'handle_external_cron' ] ); // Endpoint para cron externo
 
-        // Install/Upgrades
-        register_activation_hook( __FILE__, [ $this, 'maybe_install_tables' ] );
+        // Upgrades and migrations only
         add_action( 'admin_init', [ $this, 'maybe_migrate_once' ] );
         add_action( 'admin_init', [ $this, 'maybe_add_columns' ] );
 
@@ -1130,33 +1129,6 @@ JS;
         return $template_manager->render_template_content($tpl_id);
     }
 
-    /**
-     * Wrapper para el HTML del modal de vista previa
-     * Delegado al Template Manager
-     */
-    private function render_preview_modal_html() {
-        ob_start(); ?>
-        <div id="wec-preview-modal" style="display:none;">
-            <div id="wec-preview-wrap">
-                <div class="wec-toolbar">
-                    <div id="wec-preview-subject">Asunto...</div><span class="sep"></span>
-                    <button type="button" class="button" data-wec-size="mobile">📱 Móvil 360</button>
-                    <button type="button" class="button" data-wec-size="tablet">📟 Tablet 600</button>
-                    <button type="button" class="button" data-wec-size="desktop">💻 Desktop 800</button>
-                    <button type="button" class="button" data-wec-size="full">🖥️ Ancho libre</button>
-                </div>
-                <div class="wec-canvas">
-                    <div class="wec-frame-wrap" id="wec-frame-wrap" style="width:800px;">
-                        <iframe id="wec-preview-iframe" sandbox="allow-forms allow-same-origin allow-scripts"></iframe>
-                        <div class="wec-frame-info" id="wec-frame-info">800px de ancho</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <?php
-        return ob_get_clean();
-    }
-
     /*** CSS inliner + utilities ***/
     private function apply_descendant_inline($html, $class, $tag, $decl){
         if (trim($html) === '') return $html;
@@ -2084,53 +2056,8 @@ JS;
 
     /*** DB Install & columns ***/
     public function maybe_install_tables(){
-        global $wpdb;
-        $charset = $wpdb->get_charset_collate();
-        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
-        require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
-        $sql1 = "CREATE TABLE {$table_jobs} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            tpl_id BIGINT UNSIGNED NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'pending',
-            start_at DATETIME NOT NULL,
-            total INT UNSIGNED NOT NULL DEFAULT 0,
-            sent INT UNSIGNED NOT NULL DEFAULT 0,
-            failed INT UNSIGNED NOT NULL DEFAULT 0,
-            rate_per_minute INT UNSIGNED NOT NULL DEFAULT 100,
-            created_at DATETIME NOT NULL,
-            PRIMARY KEY (id),
-            KEY tpl_id (tpl_id),
-            KEY status (status),
-            KEY start_at (start_at)
-        ) {$charset};";
-        $sql2 = "CREATE TABLE {$table_items} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            job_id BIGINT UNSIGNED NOT NULL,
-            email VARCHAR(190) NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'queued',
-            attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
-            error TEXT NULL,
-            PRIMARY KEY (id),
-            KEY job_id (job_id),
-            KEY status (status),
-            KEY email (email)
-        ) {$charset};";
-        dbDelta($sql1);
-        dbDelta($sql2);
-
-        $sql3 = "CREATE TABLE {$wpdb->prefix}".self::DB_TABLE_SUBSCRIBERS." (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            email VARCHAR(190) NOT NULL,
-            status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
-            unsub_token VARCHAR(64) DEFAULT NULL,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_wec_email (email),
-            KEY status (status)
-        ) {$charset};";
-        dbDelta($sql3);
+        // Llamar a la función global silenciosa
+        wec_install_tables();
     }
 
     public function maybe_migrate_once(){
@@ -2265,20 +2192,79 @@ function wec_init_plugin() {
 }
 add_action('plugins_loaded', 'wec_init_plugin');
 
-/*** Hooks de activación/desactivación ***/
-register_activation_hook(__FILE__, function() {
-    $wec = new WEC_Email_Collector();
-    $wec->maybe_install_tables();
+/*** Función para instalación silenciosa ***/
+function wec_install_tables() {
+    if (!class_exists('WEC_Email_Collector')) return;
+    
+    global $wpdb;
+    $charset = $wpdb->get_charset_collate();
+    require_once( ABSPATH . 'wp-admin/includes/upgrade.php' );
+    
+    // Tabla jobs
+    $table_jobs = $wpdb->prefix . 'wec_jobs';
+    $sql1 = "CREATE TABLE {$table_jobs} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        tpl_id BIGINT UNSIGNED NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        start_at DATETIME NOT NULL,
+        total INT UNSIGNED NOT NULL DEFAULT 0,
+        sent INT UNSIGNED NOT NULL DEFAULT 0,
+        failed INT UNSIGNED NOT NULL DEFAULT 0,
+        rate_per_minute INT UNSIGNED NOT NULL DEFAULT 100,
+        created_at DATETIME NOT NULL,
+        PRIMARY KEY (id),
+        KEY tpl_id (tpl_id),
+        KEY status (status),
+        KEY start_at (start_at)
+    ) {$charset};";
+    
+    // Tabla items
+    $table_items = $wpdb->prefix . 'wec_job_items';
+    $sql2 = "CREATE TABLE {$table_items} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        job_id BIGINT UNSIGNED NOT NULL,
+        email VARCHAR(190) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'queued',
+        attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        error TEXT NULL,
+        PRIMARY KEY (id),
+        KEY job_id (job_id),
+        KEY status (status),
+        KEY email (email)
+    ) {$charset};";
+    
+    // Tabla subscribers (simplificada)
+    $table_subs = $wpdb->prefix . 'wec_subscribers';
+    $sql3 = "CREATE TABLE {$table_subs} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        email VARCHAR(190) NOT NULL,
+        status ENUM('subscribed','unsubscribed') NOT NULL DEFAULT 'subscribed',
+        unsub_token VARCHAR(64) DEFAULT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_email (email)
+    ) {$charset};";
+    
+    // Ejecutar sin output
+    @dbDelta($sql1);
+    @dbDelta($sql2);
+    @dbDelta($sql3);
     
     // Programar cron si no existe
-    if (!wp_next_scheduled(WEC_Email_Collector::CRON_HOOK)) {
-        wp_schedule_event(time(), 'every_five_minutes', WEC_Email_Collector::CRON_HOOK);
+    if (!wp_next_scheduled('wec_process_queue')) {
+        wp_schedule_event(time(), 'every_five_minutes', 'wec_process_queue');
     }
-});
+    
+    // Marcar versión
+    update_option('wec_db_ver', '3');
+}
+
+/*** Hooks de activación/desactivación ***/
+register_activation_hook(__FILE__, 'wec_install_tables');
 
 register_deactivation_hook(__FILE__, function() {
-    // Limpiar cron programado
-    wp_clear_scheduled_hook(WEC_Email_Collector::CRON_HOOK);
+    wp_clear_scheduled_hook('wec_process_queue');
 });
 
 /*** Intervalos de cron personalizados ***/
