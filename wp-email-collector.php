@@ -37,14 +37,10 @@ final class WEC_Email_Collector {
     const ADMIN_POST_PREVIEW_IFRAME  = 'wec_preview_iframe';
     const AJAX_ACTION_IFRAME         = 'wec_preview_iframe_html';
 
-    const OPT_SMTP                   = 'wec_smtp_settings';
-
     const CRON_HOOK                  = 'wec_process_queue';
     const DB_TABLE_JOBS              = 'wec_jobs';
     const DB_TABLE_ITEMS             = 'wec_job_items';
     const DB_TABLE_SUBSCRIBERS       = 'wec_subscribers';
-
-    const SEND_TEST_ACTION           = 'wec_send_test';
     const ADMIN_POST_CAMPAIGN_CREATE = 'wec_create_campaign';
     const ADMIN_POST_CAMPAIGN_UPDATE = 'wec_update_campaign';
     const ADMIN_POST_CAMPAIGN_DELETE = 'wec_delete_campaign';
@@ -62,17 +58,18 @@ final class WEC_Email_Collector {
         // Inicializar Template Manager (reemplaza las líneas de CPT)
         add_action( 'init', [ $this, 'init_template_manager' ], 5 );
 
+        // Inicializar SMTP Manager
+        add_action( 'init', [ $this, 'init_smtp_manager' ], 5 );
+
         // AJAX/Preview
         add_action( 'wp_ajax_'  . self::AJAX_ACTION_PREV,   [ $this, 'ajax_preview_template' ] );
         add_action( 'admin_post_' . self::ADMIN_POST_PREVIEW_IFRAME, [ $this, 'handle_preview_iframe' ] );
         add_action( 'wp_ajax_'  . self::AJAX_ACTION_IFRAME, [ $this, 'ajax_preview_iframe_html' ] );
 
-        // Mailing
+        // Mailing - solo contenido HTML, SMTP se maneja en SMTP Manager
         add_filter( 'wp_mail_content_type', function(){ return 'text/html'; } );
-        add_action( 'phpmailer_init', [ $this, 'setup_phpmailer' ] );
 
-        // Agregar handlers para admin-post
-        add_action( 'admin_post_' . self::SEND_TEST_ACTION,            [ $this, 'handle_send_test' ] );
+        // Agregar handlers para admin-post (excepto SMTP que maneja su propio manager)
         add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_CREATE,  [ $this, 'handle_create_campaign' ] );
         add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_UPDATE,  [ $this, 'handle_update_campaign' ] );
         add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_DELETE,  [ $this, 'handle_delete_campaign' ] );
@@ -110,6 +107,13 @@ final class WEC_Email_Collector {
      */
     public function init_template_manager() {
         WEC_Template_Manager::get_instance();
+    }
+
+    /**
+     * Inicializa el gestor SMTP
+     */
+    public function init_smtp_manager() {
+        WEC_SMTP_Manager::get_instance();
     }
 
     /**
@@ -215,42 +219,6 @@ final class WEC_Email_Collector {
         
         // Si WordPress no está en CDMX, usar hora del servidor
         return $current_wp;
-    }
-
-    /**
-     * Parsea archivos .env y devuelve array asociativo
-     */
-    private function parse_env_file($file_path) {
-        if (!file_exists($file_path)) {
-            return [];
-        }
-        
-        $env = [];
-        $lines = file($file_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        
-        foreach ($lines as $line) {
-            // Ignorar comentarios
-            if (strpos(trim($line), '#') === 0) {
-                continue;
-            }
-            
-            // Buscar formato KEY=VALUE
-            if (strpos($line, '=') !== false) {
-                list($key, $value) = explode('=', $line, 2);
-                $key = trim($key);
-                $value = trim($value);
-                
-                // Remover comillas si las hay
-                if ((substr($value, 0, 1) === '"' && substr($value, -1) === '"') ||
-                    (substr($value, 0, 1) === "'" && substr($value, -1) === "'")) {
-                    $value = substr($value, 1, -1);
-                }
-                
-                $env[$key] = $value;
-            }
-        }
-        
-        return $env;
     }
 
     /*** Assets ***/
@@ -818,188 +786,13 @@ JS;
 
     /*** SMTP ***/
     public function render_smtp_settings(){
-        if( ! current_user_can('manage_options') ) return;
-        $env_path = ABSPATH . 'programData/emailsWishList/.env';
-        $env = [];
-        if( file_exists( $env_path ) ){
-            $env = $this->parse_env_file( $env_path );
-            echo '<div class="notice notice-success"><p>Modo .env activo: usando <code>'.esc_html($env_path).'</code>.</p></div>';
-        }
-
-        $opts = get_option( self::OPT_SMTP, [] );
-        $host = $env['SMTP_HOST'] ?? ($opts['host'] ?? '');
-        $port = $env['SMTP_PORT'] ?? ($opts['port'] ?? '');
-        $user = $env['SMTP_USER'] ?? ($opts['user'] ?? '');
-        $pass = $env['SMTP_PASS'] ?? ($opts['pass'] ?? '');
-        $secure = $env['SMTP_USE_SSL'] ?? ($opts['secure'] ?? '');
-        $from_name = $env['FROM_NAME'] ?? ($opts['from_name'] ?? '');
-        $from  = $env['FROM_EMAIL'] ?? ($opts['from'] ?? '');
-
-        if( isset($_POST['wec_smtp_save']) && check_admin_referer('wec_smtp_save') ){
-            $opts = [
-              'host' => sanitize_text_field($_POST['SMTP_HOST'] ?? ''),
-              'port' => intval($_POST['SMTP_PORT'] ?? 0),
-              'user' => sanitize_text_field($_POST['SMTP_USER'] ?? ''),
-              'pass' => sanitize_text_field($_POST['SMTP_PASS'] ?? ''),
-              'secure'=> sanitize_text_field($_POST['SMTP_USE_SSL'] ?? ''),
-              'from' => sanitize_email($_POST['FROM_EMAIL'] ?? ''),
-              'from_name'=> sanitize_text_field($_POST['FROM_NAME'] ?? ''),
-            ];
-            update_option( self::OPT_SMTP, $opts );
-            echo '<div class="notice notice-success"><p>SMTP guardado.</p></div>';
-            $host=$opts['host'];$port=$opts['port'];$user=$opts['user'];$pass=$opts['pass'];$secure=$opts['secure'];$from=$opts['from'];$from_name=$opts['from_name'];
-        }
-
-        // Mostrar mensaje de test si viene de redirect
-        if(isset($_GET['test'])) {
-            if($_GET['test'] === 'ok') {
-                echo '<div class="notice notice-success"><p><strong>✅ Email de prueba enviado correctamente</strong> - La configuración SMTP funciona.</p></div>';
-            } else {
-                echo '<div class="notice notice-error"><p><strong>❌ Error al enviar email de prueba</strong> - Revisa la configuración SMTP.</p></div>';
-            }
-        }
-
-        $templates = get_posts([ 'post_type'=> self::CPT_TPL, 'numberposts'=> -1, 'post_status'=> ['publish','draft'] ]);
-        ?>
-        <div class="wrap">
-            <h1>Configuración SMTP</h1>
-            
-            <h2>Configuración del Servidor</h2>
-            <form method="post">
-                <?php wp_nonce_field('wec_smtp_save'); ?>
-                <table class="form-table">
-                  <tr><th><label for="SMTP_HOST">SMTP_HOST</label></th><td><input id="SMTP_HOST" name="SMTP_HOST" value="<?php echo esc_attr($host); ?>" class="regular-text"></td></tr>
-                  <tr><th><label for="SMTP_PORT">SMTP_PORT</label></th><td><input id="SMTP_PORT" name="SMTP_PORT" value="<?php echo esc_attr($port?:587); ?>" class="small-text"></td></tr>
-                  <tr><th><label for="SMTP_USER">SMTP_USER</label></th><td><input id="SMTP_USER" name="SMTP_USER" value="<?php echo esc_attr($user); ?>" class="regular-text"></td></tr>
-                  <tr><th><label for="SMTP_PASS">SMTP_PASS</label></th><td><input id="SMTP_PASS" name="SMTP_PASS" type="password" value="<?php echo esc_attr($pass); ?>" class="regular-text"></td></tr>
-                  <tr><th><label for="FROM_NAME">FROM_NAME</label></th><td><input id="FROM_NAME" name="FROM_NAME" value="<?php echo esc_attr($from_name); ?>" class="regular-text"></td></tr>
-                  <tr><th><label for="FROM_EMAIL">FROM_EMAIL</label></th><td><input id="FROM_EMAIL" name="FROM_EMAIL" value="<?php echo esc_attr($from); ?>" class="regular-text"></td></tr>
-                  <tr><th><label for="SMTP_USE_SSL">SMTP_USE_SSL</label></th>
-                    <td>
-                      <select name="SMTP_USE_SSL" id="SMTP_USE_SSL">
-                        <option value="" <?php selected($secure, ''); ?>>Sin cifrado</option>
-                        <option value="tls" <?php selected($secure, 'tls'); ?>>TLS</option>
-                        <option value="ssl" <?php selected($secure, 'ssl'); ?>>SSL</option>
-                      </select>
-                    </td>
-                  </tr>
-                </table>
-                <p><button class="button button-primary" name="wec_smtp_save" value="1">Guardar Configuración</button></p>
-            </form>
-
-            <hr>
-
-            <h2>Probar Configuración SMTP</h2>
-            <p>Envía un email de prueba para verificar que la configuración SMTP funciona correctamente.</p>
-            <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>">
-                <input type="hidden" name="action" value="<?php echo esc_attr(self::SEND_TEST_ACTION); ?>">
-                <?php wp_nonce_field( 'wec_send_test' ); ?>
-                <table class="form-table">
-                    <tr>
-                      <th><label for="wec_template_id">Plantilla</label></th>
-                      <td class="wec-inline">
-                        <select name="wec_template_id" id="wec_template_id">
-                          <?php if($templates): foreach($templates as $tpl): ?>
-                          <option value="<?php echo esc_attr($tpl->ID); ?>"><?php echo esc_html($tpl->post_title ?: '(sin título)'); ?></option>
-                          <?php endforeach; else: ?>
-                          <option value="">No hay plantillas disponibles</option>
-                          <?php endif; ?>
-                        </select>
-                        <?php if($templates): ?>
-                        <button id="wec-btn-preview" type="button" class="button">Vista previa</button>
-                        <?php endif; ?>
-                      </td>
-                    </tr>
-                    <tr>
-                      <th><label for="wec_test_email">Correo destinatario</label></th>
-                      <td><input type="email" name="wec_test_email" id="wec_test_email" class="regular-text" required placeholder="prueba@ejemplo.com"></td>
-                    </tr>
-                </table>
-                <p>
-                    <?php if($templates): ?>
-                    <button class="button button-primary">Enviar Email de Prueba</button>
-                    <?php else: ?>
-                    <span class="description">Primero crea una plantilla de email para poder enviar pruebas.</span>
-                    <?php endif; ?>
-                </p>
-            </form>
-
-            <?php if($templates): ?>
-            <p>
-              <a class="button" href="<?php echo esc_url( admin_url('edit.php?post_type='.self::CPT_TPL) ); ?>">Gestionar Plantillas</a>
-            </p>
-            <?php else: ?>
-            <p>
-              <a class="button button-secondary" href="<?php echo esc_url( admin_url('post-new.php?post_type='.self::CPT_TPL) ); ?>">Crear Primera Plantilla</a>
-            </p>
-            <?php endif; ?>
-
-            <?php 
-            // Agregar el modal de vista previa para SMTP
-            if($templates) {
-                echo $this->render_preview_modal_html(); 
-            }
-            ?>
-        </div>
-        <?php
-    }
-
-    public function setup_phpmailer( $phpmailer ){
-        $opts = get_option( self::OPT_SMTP, [] );
-        $env_path = ABSPATH . 'programData/emailsWishList/.env';
-        if( file_exists($env_path) ){
-            $env = $this->parse_env_file($env_path);
-            $opts['host'] = $env['SMTP_HOST'] ?? ($opts['host'] ?? '');
-            $opts['port'] = $env['SMTP_PORT'] ?? ($opts['port'] ?? '');
-            $opts['user'] = $env['SMTP_USER'] ?? ($opts['user'] ?? '');
-            $opts['pass'] = $env['SMTP_PASS'] ?? ($opts['pass'] ?? '');
-            $opts['secure'] = $env['SMTP_USE_SSL'] ?? ($opts['secure'] ?? '');
-            $opts['from_name'] = $env['FROM_NAME'] ?? ($opts['from_name'] ?? '');
-            $opts['from'] = $env['FROM_EMAIL'] ?? ($opts['from'] ?? '');
-        }
-        if( empty($opts['host']) ) return;
-        $phpmailer->isSMTP();
-        $phpmailer->Host = $opts['host'];
-        if( ! empty($opts['port']) ) $phpmailer->Port = intval($opts['port']);
-        if( ! empty($opts['user']) ){
-            $phpmailer->SMTPAuth = true;
-            $phpmailer->Username = $opts['user'];
-            $phpmailer->Password = $opts['pass'] ?? '';
-        }
-        if( ! empty($opts['secure']) ) $phpmailer->SMTPSecure = $opts['secure'];
-        if( ! empty($opts['from']) )   $phpmailer->setFrom( $opts['from'], $opts['from_name'] ?? '' );
+        // Delegar al SMTP Manager
+        $smtp_manager = WEC_SMTP_Manager::get_instance();
+        $smtp_manager->render_smtp_settings();
     }
 
     /*** Send test ***/
-    public function handle_send_test(){
-        if( ! current_user_can('manage_options') ) wp_die('No autorizado');
-        check_admin_referer( 'wec_send_test' );
-        $tpl_id = intval($_POST['wec_template_id'] ?? 0);
-        $to     = sanitize_email($_POST['wec_test_email'] ?? '');
-        if( ! $tpl_id || ! is_email($to) ) wp_die('Datos inválidos.');
-
-        $template_result = $this->render_template_content($tpl_id);
-        if (is_wp_error($template_result)) {
-            wp_die('Error en la plantilla: ' . $template_result->get_error_message());
-        }
-        
-        list($subject,$html_raw) = $template_result;
-
-        // Envío REAL: inliner + resets
-        $html_final = $this->build_email_html(
-            $html_raw,
-            $to,
-            [
-                'inline'        => true,    // Activar inlining para Gmail
-                'preserve_css'  => false,   // Gmail necesita estilos inline puros
-                'reset_links'   => true     // Aplicar todas las correcciones
-            ]
-        );
-
-        $ok = wp_mail( $to, $subject, $html_final, [ 'Content-Type: text/html; charset=UTF-8' ] );
-        wp_safe_redirect( admin_url('admin.php?page=wec-smtp&test='.($ok?'ok':'fail')) );
-        exit;
-    }
+    // Las funciones de envío de test ahora están en WEC_SMTP_Manager
 
     /*** Configurar Cron Persistente ***/
     public function setup_recurring_cron() {
