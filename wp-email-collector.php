@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Email Collector
  * Description: Gestiona plantillas de email, campañas con cola y vista previa. Incluye SMTP, WP-Cron, Unsubscribe y CSS Inliner para vista previa/envíos.
- * Version:     3.0.0
+ * Version:     6.0.0
  * Author:      Drexora
  * License:     GPLv2 or later
  * Text Domain: wp-email-collector

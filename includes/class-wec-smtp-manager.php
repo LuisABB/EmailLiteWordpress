@@ -10,9 +10,29 @@
  * - Renderizado seguro de plantillas con fallback
  * 
  * @since 3.0.0
+ * @requires PHP 7.4+ (WordPress minimum requirement)
+ * @requires WordPress 5.0+
+ * 
+ * Note: Uses anonymous classes (PHP 7.0+ feature) for Template Manager adapter pattern
  */
 
 if (!defined('ABSPATH')) exit;
+
+// Verificar requisitos mínimos de PHP
+if (version_compare(PHP_VERSION, '7.4', '<')) {
+    if (is_admin()) {
+        add_action('admin_notices', function() {
+            echo '<div class="notice notice-error"><p>';
+            echo '<strong>WP Email Collector:</strong> ';
+            printf(
+                __('Este plugin requiere PHP 7.4 o superior. Versión actual: %s. Por favor actualiza PHP para usar este plugin.', 'wp-email-collector'),
+                PHP_VERSION
+            );
+            echo '</p></div>';
+        });
+    }
+    return; // No cargar el resto del código
+}
 
 /**
  * Interfaz para renderizadores de plantillas
@@ -512,7 +532,7 @@ FROM_EMAIL=noreply@tudominio.com
      */
     public function handle_send_test() {
         if (!current_user_can('manage_options')) {
-            wp_die('No autorizado');
+            wp_die(__('No tienes permisos para acceder a esta función.', 'wp-email-collector'));
         }
         
         check_admin_referer('wec_send_test');
@@ -521,13 +541,13 @@ FROM_EMAIL=noreply@tudominio.com
         $to = sanitize_email($_POST['wec_test_email'] ?? '');
         
         if (!$tpl_id || !is_email($to)) {
-            wp_die('Datos inválidos. Verifica que hayas seleccionado una plantilla y un email válido.');
+            wp_die(__('Datos inválidos. Verifica que hayas seleccionado una plantilla y un email válido.', 'wp-email-collector'));
         }
         
         // Verificar que la plantilla existe
         $template = get_post($tpl_id);
         if (!$template || $template->post_type !== self::EMAIL_TEMPLATE_POST_TYPE) {
-            wp_die('Plantilla no encontrada o inválida.');
+            wp_die(__('Plantilla no encontrada o inválida.', 'wp-email-collector'));
         }
         
         try {
@@ -535,7 +555,7 @@ FROM_EMAIL=noreply@tudominio.com
             $template_result = $this->render_template_safely($tpl_id);
             
             if (is_wp_error($template_result)) {
-                wp_die('Error en la plantilla: ' . $template_result->get_error_message());
+                wp_die(sprintf(__('Error en la plantilla: %s', 'wp-email-collector'), $template_result->get_error_message()));
             }
             
             list($subject, $html_content) = $template_result;
@@ -555,7 +575,7 @@ FROM_EMAIL=noreply@tudominio.com
             wp_safe_redirect($redirect_url);
             
         } catch (Exception $e) {
-            wp_die('Error al enviar email de prueba: ' . $e->getMessage());
+            wp_die(sprintf(__('Error al enviar email de prueba: %s', 'wp-email-collector'), $e->getMessage()));
         }
         
         exit;
@@ -570,7 +590,7 @@ FROM_EMAIL=noreply@tudominio.com
         // Validar que la plantilla existe
         $template = get_post($tpl_id);
         if (!$template || $template->post_type !== self::EMAIL_TEMPLATE_POST_TYPE) {
-            return new WP_Error('invalid_template', 'Plantilla no encontrada o inválida.');
+            return new WP_Error('invalid_template', __('Plantilla no encontrada o inválida.', 'wp-email-collector'));
         }
         
         // Usar renderizador configurado si está disponible
@@ -628,13 +648,13 @@ FROM_EMAIL=noreply@tudominio.com
             // Obtener asunto de la plantilla
             $subject = get_post_meta($template->ID, '_wec_subject', true);
             if (empty($subject)) {
-                $subject = $template->post_title ?: 'Email desde ' . get_bloginfo('name');
+                $subject = $template->post_title ?: sprintf(__('Email desde %s', 'wp-email-collector'), get_bloginfo('name'));
             }
             
             // Obtener contenido HTML
             $html_content = $template->post_content;
             if (empty($html_content)) {
-                return new WP_Error('empty_template', 'La plantilla no tiene contenido.');
+                return new WP_Error('empty_template', __('La plantilla no tiene contenido.', 'wp-email-collector'));
             }
             
             // Aplicar filtros básicos de WordPress al contenido
@@ -649,7 +669,7 @@ FROM_EMAIL=noreply@tudominio.com
             return [$subject, $html_content];
             
         } catch (Exception $e) {
-            return new WP_Error('fallback_error', 'Error en renderizado fallback: ' . $e->getMessage());
+            return new WP_Error('fallback_error', sprintf(__('Error en renderizado fallback: %s', 'wp-email-collector'), $e->getMessage()));
         }
     }
     
@@ -662,7 +682,7 @@ FROM_EMAIL=noreply@tudominio.com
         $replacements = [
             '{{site_name}}'    => get_bloginfo('name'),
             '{{site_url}}'     => home_url(),
-            '{{current_year}}' => date('Y'),
+            '{{current_year}}' => wp_date('Y'), 
             '{{current_date}}' => date_i18n(get_option('date_format')),
         ];
         
@@ -676,19 +696,7 @@ FROM_EMAIL=noreply@tudominio.com
      * @return string
      */
     private function process_email_html($html_content) {
-        // Verificar si hay un método build_email_html disponible en el plugin principal
-        if (class_exists('WP_Email_Collector_Lite') && method_exists('WP_Email_Collector_Lite', 'get_instance')) {
-            try {
-                $main_instance = WP_Email_Collector_Lite::get_instance();
-                if (method_exists($main_instance, 'build_email_html')) {
-                    return $main_instance->build_email_html($html_content);
-                }
-            } catch (Exception $e) {
-                error_log('WEC_SMTP_Manager: Error usando build_email_html: ' . $e->getMessage());
-            }
-        }
-        
-        // Fallback: aplicar transformaciones básicas para compatibilidad con email
+        // Aplicar transformaciones básicas para compatibilidad con email
         return $this->apply_email_transformations($html_content);
     }
     
@@ -740,24 +748,65 @@ FROM_EMAIL=noreply@tudominio.com
      * @return string
      */
     private function apply_inline_styles($html) {
-        // Patrones básicos para mejorar compatibilidad
-        $replacements = [
-            // Asegurar que las tablas tengan estilos inline
-            '<table' => '<table style="border-collapse: collapse; width: 100%;"',
-            '<td' => '<td style="padding: 10px; vertical-align: top;"',
-            '<th' => '<th style="padding: 10px; text-align: left; font-weight: bold;"',
-            // Asegurar que los párrafos tengan margen inline
-            '<p>' => '<p style="margin: 0 0 16px 0; line-height: 1.6;">',
-            // Enlaces con estilos básicos
-            '<a ' => '<a style="color: #0073aa; text-decoration: none;" ',
-        ];
-        
-        foreach ($replacements as $search => $replace) {
-            // Solo reemplazar si no tiene ya atributo style
-            if (strpos($search, 'style=') === false) {
-                $html = str_replace($search, $replace, $html);
+        // Aplicar estilos a tablas que no tengan ya un atributo style
+        $html = preg_replace_callback('/<table([^>]*?)>/i', function($matches) {
+            $attributes = $matches[1];
+            
+            // Si no tiene style, agregar estilos básicos para tablas
+            if (strpos($attributes, 'style=') === false) {
+                $attributes .= ' style="border-collapse: collapse; width: 100%;"';
             }
-        }
+            
+            return '<table' . $attributes . '>';
+        }, $html);
+        
+        // Aplicar estilos a celdas TD que no tengan ya un atributo style
+        $html = preg_replace_callback('/<td([^>]*?)>/i', function($matches) {
+            $attributes = $matches[1];
+            
+            // Si no tiene style, agregar estilos básicos para celdas
+            if (strpos($attributes, 'style=') === false) {
+                $attributes .= ' style="padding: 10px; vertical-align: top;"';
+            }
+            
+            return '<td' . $attributes . '>';
+        }, $html);
+        
+        // Aplicar estilos a encabezados TH que no tengan ya un atributo style
+        $html = preg_replace_callback('/<th([^>]*?)>/i', function($matches) {
+            $attributes = $matches[1];
+            
+            // Si no tiene style, agregar estilos básicos para encabezados
+            if (strpos($attributes, 'style=') === false) {
+                $attributes .= ' style="padding: 10px; text-align: left; font-weight: bold;"';
+            }
+            
+            return '<th' . $attributes . '>';
+        }, $html);
+        
+        // Aplicar estilos a párrafos que no tengan ya un atributo style
+        $html = preg_replace_callback('/<p(\s[^>]*?)?>/i', function($matches) {
+            $attributes = $matches[1] ?? '';
+            
+            // Si no tiene style, agregar estilos básicos para párrafos
+            if (strpos($attributes, 'style=') === false) {
+                $attributes .= ' style="margin: 0 0 16px 0; line-height: 1.6;"';
+            }
+            
+            return '<p' . $attributes . '>';
+        }, $html);
+        
+        // Aplicar estilos a enlaces que no tengan ya un atributo style
+        $html = preg_replace_callback('/<a(\s[^>]*?)>/i', function($matches) {
+            $attributes = $matches[1];
+            
+            // Si no tiene style, agregar estilos básicos para enlaces
+            if (strpos($attributes, 'style=') === false) {
+                $attributes .= ' style="color: #0073aa; text-decoration: none;"';
+            }
+            
+            return '<a' . $attributes . '>';
+        }, $html);
         
         return $html;
     }
@@ -773,10 +822,30 @@ FROM_EMAIL=noreply@tudominio.com
         $html = preg_replace('/<!--\s*\[if\s+.*?\]>.*?<!\[endif\]\s*-->/is', '', $html);
         
         // Asegurar que las imágenes tengan dimensiones explícitas
-        $html = preg_replace('/<img([^>]*?)>/i', '<img$1 style="display: block; max-width: 100%; height: auto;">', $html);
+        $html = preg_replace_callback('/<img\b([^>]*?)>/i', function($matches) {
+            $attributes = $matches[1];
+            
+            // Verificar si ya tiene un atributo style (más robusto)
+            if (!preg_match('/\bstyle\s*=/i', $attributes)) {
+                // Si no tiene style, agregar estilos básicos para imágenes
+                $attributes .= ' style="display: block; max-width: 100%; height: auto;"';
+            }
+            
+            return '<img' . $attributes . '>';
+        }, $html);
         
         // Forzar display block en divs principales para Gmail
-        $html = preg_replace('/<div([^>]*?)>/i', '<div$1 style="display: block;">', $html);
+        $html = preg_replace_callback('/<div\b([^>]*?)>/i', function($matches) {
+            $attributes = $matches[1];
+            
+            // Verificar si ya tiene un atributo style (más robusto)
+            if (!preg_match('/\bstyle\s*=/i', $attributes)) {
+                // Si no tiene style, agregar display block para Gmail
+                $attributes .= ' style="display: block;"';
+            }
+            
+            return '<div' . $attributes . '>';
+        }, $html);
         
         return $html;
     }
@@ -845,10 +914,6 @@ FROM_EMAIL=noreply@tudominio.com
             // Buscar formato KEY=VALUE
             if (strpos($line, '=') !== false) {
                 $parts = explode('=', $line, 2);
-                if (count($parts) !== 2) {
-                    error_log("WEC_SMTP_Manager: Invalid .env format on line " . ($line_number + 1) . ": {$line}");
-                    continue;
-                }
                 
                 list($key, $value) = $parts;
                 $key = trim($key);
