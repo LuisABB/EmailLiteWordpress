@@ -9,7 +9,7 @@
  * - Envío de emails de prueba
  * - Renderizado seguro de plantillas con fallback
  * 
- * @since 3.0.0
+ * @since 6.0.0
  * @requires PHP 7.4+ (WordPress minimum requirement)
  * @requires WordPress 5.0+
  * 
@@ -305,7 +305,7 @@ class WEC_SMTP_Manager {
                     <tr>
                         <th><label for="SMTP_PASS"><?php echo __('Contraseña SMTP', 'wp-email-collector'); ?></label></th>
                         <td>
-                            <input id="SMTP_PASS" name="SMTP_PASS" type="password" value="<?php echo esc_attr($config['pass']); ?>" class="regular-text" placeholder="tu-contraseña">
+                            <input id="SMTP_PASS" name="SMTP_PASS" type="password" value="<?php echo esc_attr($config['pass']); ?>" class="regular-text" placeholder="<?php echo esc_attr__('tu-contraseña', 'wp-email-collector'); ?>" autocomplete="new-password">
                             <p class="description"><?php echo __('Contraseña o token de aplicación para SMTP.', 'wp-email-collector'); ?></p>
                         </td>
                     </tr>
@@ -450,13 +450,13 @@ FROM_EMAIL=noreply@tudominio.com
         <div id="wec-preview-modal" style="display:none;">
             <div id="wec-preview-wrap">
                 <div class="wec-toolbar">
-                    <span id="wec-preview-subject">Vista previa del email</span>
+                    <span id="wec-preview-subject">' . esc_html__('Vista previa del email', 'wp-email-collector') . '</span>
                     <div class="sep"></div>
-                    <button type="button" class="button" onclick="tb_remove();">Cerrar</button>
+                    <button type="button" class="button wec-close-preview">' . esc_html__('Cerrar', 'wp-email-collector') . '</button>
                 </div>
                 <div class="wec-canvas">
                     <div class="wec-frame-wrap">
-                        <div class="wec-frame-info">Vista previa del template</div>
+                        <div class="wec-frame-info">' . esc_html__('Vista previa del template', 'wp-email-collector') . '</div>
                         <iframe id="wec-preview-iframe" src="about:blank"></iframe>
                     </div>
                 </div>
@@ -560,8 +560,8 @@ FROM_EMAIL=noreply@tudominio.com
             
             list($subject, $html_content) = $template_result;
             
-            // Procesar HTML para compatibilidad con clientes de email
-            $html_content = $this->process_email_html($html_content);
+            // Procesar HTML para compatibilidad con clientes de email usando el mismo método que las campañas
+            $html_content = $this->build_email_html_for_sending($html_content);
             
             // Enviar email
             $headers = ['Content-Type: text/html; charset=UTF-8'];
@@ -871,7 +871,345 @@ FROM_EMAIL=noreply@tudominio.com
         
         return $html;
     }
-
+    
+    /**
+     * Construye el HTML final del email con el mismo nivel de procesamiento que las campañas
+     * Aplica CSS inlining, Gmail compatibility y resets como en build_email_html del plugin principal
+     * @param string $raw_html Contenido HTML crudo
+     * @param string|null $recipient_email Email del destinatario para UNSUB_URL (opcional en tests)
+     * @return string HTML procesado y optimizado para clientes de email
+     */
+    private function build_email_html_for_sending($raw_html, $recipient_email = null) {
+        // Configuración para envío real (misma que campaigns)
+        $opts = [
+            'inline'       => true,     // Activar CSS inlining para Gmail
+            'preserve_css' => false,    // Gmail necesita estilos inline puros
+            'reset_links'  => true      // Aplicar todas las correcciones para email
+        ];
+        
+        $html = $raw_html;
+        
+        // PASO 1: Reemplazar placeholders si hay email destinatario
+        if ($recipient_email) {
+            $html = str_replace('[[UNSUB_URL]]', $this->get_unsub_url($recipient_email), $html);
+        } else {
+            // Para tests, usar URL genérica
+            $html = str_replace('[[UNSUB_URL]]', home_url('/unsubscribe/'), $html);
+        }
+        
+        // PASO 2: Agregar estilos de reset para email antes del inlining
+        $html = $this->add_email_reset_styles_advanced($html);
+        
+        // PASO 3: CSS Inlining agresivo para Gmail compatibility
+        if ($opts['inline']) {
+            $html = $this->inline_css_rules_advanced($html, $opts['preserve_css']);
+        }
+        
+        // PASO 4: Aplicar correcciones de enlaces para máxima compatibilidad
+        if ($opts['reset_links']) {
+            $html = $this->apply_advanced_link_resets($html);
+        }
+        
+        // PASO 5: Envolver en estructura HTML completa para email
+        return $this->wrap_email_html_advanced($html);
+    }
+    
+    /**
+     * Aplica estilos CSS de reset avanzados para clientes de email
+     * Equivalente a add_email_reset_styles del plugin principal
+     */
+    private function add_email_reset_styles_advanced($html) {
+        $reset_css = '
+        <style type="text/css">
+            /* Reset básico para clientes de email */
+            body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+            table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; }
+            img { -ms-interpolation-mode: bicubic; border: 0; outline: none; text-decoration: none; display: block; }
+            
+            /* Reset de enlaces crítico para Gmail */
+            a, a:link, a:visited, a:hover, a:active, a:focus {
+                color: inherit !important;
+                text-decoration: none !important;
+                border: 0 !important;
+                outline: none !important;
+            }
+            
+            /* Forzar visibilidad de botones críticos */
+            .btn, .btn-red, .button, a.btn, a.btn-red {
+                display: inline-block !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                background-color: #D94949 !important;
+                color: #ffffff !important;
+                padding: 12px 22px !important;
+                border-radius: 8px !important;
+                font-family: Arial, Helvetica, sans-serif !important;
+                font-weight: 700 !important;
+                font-size: 16px !important;
+                text-decoration: none !important;
+                border: 0 !important;
+                outline: none !important;
+                text-align: center !important;
+            }
+            
+            /* Navegación específica */
+            .nav-white a, .dark a {
+                color: #ffffff !important;
+                text-decoration: none !important;
+                font-family: Arial, Helvetica, sans-serif !important;
+            }
+            
+            /* Outlook específico */
+            .ExternalClass { width: 100%; }
+            .ExternalClass, .ExternalClass p, .ExternalClass span, 
+            .ExternalClass font, .ExternalClass td, .ExternalClass div {
+                line-height: 100%;
+            }
+            
+            /* Clases de color críticas */
+            .text-white { color: #ffffff !important; }
+            .text-muted { color: #d6d6d6 !important; }
+            .gold { color: #D4AF37 !important; }
+            .bg-dark { background-color: #000000 !important; }
+            
+            /* Centrado para vista previa */
+            .center, .text-center { text-align: center !important; }
+        </style>';
+        
+        if (preg_match('/<head[^>]*>/i', $html)) {
+            return preg_replace('/<head[^>]*>/i', '$0' . $reset_css, $html, 1);
+        } else {
+            return $reset_css . $html;
+        }
+    }
+    
+    /**
+     * CSS inlining avanzado equivalente al del plugin principal
+     * Convierte reglas CSS a estilos inline para máxima compatibilidad con Gmail
+     */
+    private function inline_css_rules_advanced($html, $preserve_styles = false) {
+        // Si no hay estilos, no hacer nada
+        if (!preg_match_all('#<style[^>]*>(.*?)</style>#is', $html, $m)) {
+            return $html;
+        }
+        
+        $css_all = implode("\n", $m[1]);
+        
+        // Remover estilos del HTML si no preservamos
+        if (!$preserve_styles) {
+            $html = preg_replace('#<style[^>]*>.*?</style>#is', '', $html);
+        }
+        
+        // Aplicar estilos críticos de botones ANTES del procesamiento general
+        $html = $this->apply_critical_button_styles_inline_advanced($html, $css_all);
+        
+        // Procesar reglas CSS simples y seguras
+        if (preg_match_all('#([^{]+)\{([^}]+)\}#', $css_all, $rules, PREG_SET_ORDER)) {
+            foreach ($rules as $rule) {
+                $selector_raw = trim($rule[1]);
+                $declarations = trim($rule[2]);
+                
+                // Procesar cada selector por separado
+                $selectors = array_map('trim', explode(',', $selector_raw));
+                foreach($selectors as $sel) {
+                    if ($sel === '') continue;
+                    
+                    // Saltar media queries y pseudo-elementos no soportados
+                    if (strpos($sel, '@') !== false || strpos($sel, '::') !== false) continue;
+                    
+                    // Saltar selectores de botones (ya procesados)
+                    if (preg_match('/btn/i', $sel)) continue;
+                    
+                    // Selectores simples (tag, .class, #id)
+                    if (preg_match('/^[a-zA-Z]+$/', $sel) || preg_match('/^\.[a-zA-Z0-9_-]+$/', $sel)) {
+                        $regex = $this->selector_to_regex_simple($sel);
+                        if ($regex) {
+                            $html = preg_replace_callback($regex, function($m) use ($declarations){
+                                return $this->merge_inline_styles_safe($m[0], $declarations);
+                            }, $html);
+                        }
+                    }
+                }
+            }
+        }
+        
+        return $html;
+    }
+    
+    /**
+     * Aplica estilos críticos a botones de forma segura antes del inlining
+     */
+    private function apply_critical_button_styles_inline_advanced($html, $css_all) {
+        $button_styles = 'display:inline-block!important;visibility:visible!important;opacity:1!important;background-color:#D94949!important;color:#ffffff!important;padding:12px 22px!important;border-radius:8px!important;font-family:Arial,Helvetica,sans-serif!important;font-weight:700!important;font-size:16px!important;text-decoration:none!important;border:0!important;outline:none!important;text-align:center!important;';
+        
+        // Aplicar estilos a elementos con clase btn
+        $html = preg_replace_callback(
+            '#<a\b([^>]*\bclass=["\'][^"\']*\bbtn[^"\']*["\'][^>]*)>(.*?)</a>#is',
+            function($m) use ($button_styles) {
+                $attrs = $m[1];
+                $content = $m[2];
+                
+                if (preg_match('/\sstyle=(["\'])(.*?)\1/i', $attrs, $sm)) {
+                    $existing = trim($sm[2]);
+                    $combined = $button_styles . ';' . $existing;
+                    $attrs = preg_replace('/\sstyle=(["\'])(.*?)\1/i', ' style="' . esc_attr($combined) . '"', $attrs, 1);
+                } else {
+                    $attrs .= ' style="' . esc_attr($button_styles) . '"';
+                }
+                
+                return '<a' . $attrs . '>' . $content . '</a>';
+            },
+            $html
+        );
+        
+        return $html;
+    }
+    
+    /**
+     * Convierte selectores CSS simples a regex para inlining
+     */
+    private function selector_to_regex_simple($sel) {
+        $sel = trim($sel);
+        
+        if (preg_match('/^([a-zA-Z][a-zA-Z0-9]*)$/', $sel, $m)) {
+            // Tag selector: p, div, etc.
+            $tag = $m[1];
+            return '#<' . $tag . '\b([^>]*?)>#i';
+        } elseif (preg_match('/^\.([a-zA-Z0-9_-]+)$/', $sel, $m)) {
+            // Class selector: .btn, .center, etc.
+            $class = $m[1];
+            return '#<[a-zA-Z][a-zA-Z0-9]*\b(?=[^>]*\bclass=["\'][^"\']*\b' . preg_quote($class, '#') . '\b[^"\']*["\'])[^>]*?>#i';
+        }
+        
+        return null; // Selector no soportado
+    }
+    
+    /**
+     * Combina estilos inline de forma segura
+     */
+    private function merge_inline_styles_safe($element, $new_declarations) {
+        $new_decl = trim($new_declarations);
+        if ($new_decl !== '' && substr($new_decl, -1) !== ';') {
+            $new_decl .= ';';
+        }
+        
+        if (preg_match('/\sstyle=("|\')(.*?)\1/i', $element, $sm)) {
+            $existing = trim($sm[2]);
+            $combined = $existing . ($existing && substr($existing, -1) !== ';' ? ';' : '') . $new_decl;
+            return preg_replace('/\sstyle=("|\')(.*?)\1/i', ' style="' . esc_attr($combined) . '"', $element, 1);
+        } else {
+            return preg_replace('/>/', ' style="' . esc_attr($new_decl) . '">', $element, 1);
+        }
+    }
+    
+    /**
+     * Aplica correcciones avanzadas de enlaces para clientes de email
+     */
+    private function apply_advanced_link_resets($html) {
+        // Reset global de enlaces preservando todos los atributos
+        $html = preg_replace_callback(
+            '#<a\b([^>]*)>#i',
+            function($m) {
+                $attrs = $m[1];
+                $base_styles = 'text-decoration:none!important;border:0!important;outline:none!important;';
+                
+                if (preg_match('/\sstyle=("|\')(.*?)\1/i', $attrs, $sm)) {
+                    $existing_style = trim($sm[2]);
+                    if (!preg_match('/(^|;)\s*color\s*:/i', $existing_style)) {
+                        $existing_style .= ($existing_style && substr($existing_style, -1) !== ';' ? ';' : '') . 'color:inherit!important;';
+                    }
+                    $final_style = $existing_style . ($existing_style && substr($existing_style, -1) !== ';' ? ';' : '') . $base_styles;
+                    $attrs = preg_replace('/\sstyle=("|\')(.*?)\1/i', ' style="' . esc_attr($final_style) . '"', $attrs, 1);
+                } else {
+                    $attrs .= ' style="color:inherit!important;' . $base_styles . '"';
+                }
+                return '<a' . $attrs . '>';
+            },
+            $html
+        );
+        
+        // Normalizar imágenes dentro de enlaces
+        $html = preg_replace_callback(
+            '#(<a\b[^>]*>)(.*?)(</a>)#is',
+            function($m) {
+                $open_tag = $m[1];
+                $inner_content = $m[2];
+                $close_tag = $m[3];
+                
+                $inner_content = preg_replace_callback(
+                    '#<img\b([^>]*)>#i',
+                    function($img_match) {
+                        $img_attrs = $img_match[1];
+                        $img_styles = 'display:block!important;border:0!important;outline:none!important;text-decoration:none!important;';
+                        
+                        if (preg_match('/\sstyle=("|\')(.*?)\1/i', $img_attrs)) {
+                            $img_attrs = preg_replace('/\sstyle=("|\')(.*?)\1/i', ' style="$2;' . $img_styles . '"', $img_attrs, 1);
+                        } else {
+                            $img_attrs .= ' style="' . esc_attr($img_styles) . '"';
+                        }
+                        
+                        if (!preg_match('/\bborder\s*=/i', $img_attrs)) {
+                            $img_attrs .= ' border="0"';
+                        }
+                        
+                        return '<img' . $img_attrs . '>';
+                    },
+                    $inner_content
+                );
+                
+                return $open_tag . $inner_content . $close_tag;
+            },
+            $html
+        );
+        
+        return $html;
+    }
+    
+    /**
+     * Envuelve HTML en estructura completa optimizada para email
+     */
+    private function wrap_email_html_advanced($body_html) {
+        if (preg_match('/<html\b/i', $body_html)) {
+            // Si ya es HTML completo, agregar elementos faltantes
+            if (preg_match('/<head\b[^>]*>/i', $body_html) && !preg_match('/<base\b/i', $body_html)) {
+                $base = '<base href="' . esc_url(home_url('/')) . '">';
+                $body_html = preg_replace('/<head\b[^>]*>/i', '$0' . $base, $body_html, 1);
+            }
+            return $body_html;
+        }
+        
+        // Crear HTML completo con metadatos optimizados para email
+        $head = '<meta charset="utf-8">'
+              . '<meta name="viewport" content="width=device-width,initial-scale=1">'
+              . '<meta name="x-apple-disable-message-reformatting">'
+              . '<meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no">'
+              . '<meta name="color-scheme" content="light only">'
+              . '<meta name="supported-color-schemes" content="light">'
+              . '<base href="' . esc_url(home_url('/')) . '">'
+              . '<!--[if gte mso 9]><xml><o:OfficeDocumentSettings><o:AllowPNG/><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->';
+        
+        $body_attrs = 'style="margin:0;padding:0;background-color:#ffffff;font-family:Arial,sans-serif;" '
+                    . 'link="#000000" vlink="#000000" alink="#000000" '
+                    . 'bgcolor="#ffffff"';
+        
+        return '<!doctype html>'
+             . '<html lang="es" xmlns="http://www.w3.org/1999/xhtml" xmlns:o="urn:schemas-microsoft-com:office:office">'
+             . '<head>' . $head . '</head>'
+             . '<body ' . $body_attrs . '>' . $body_html . '</body>'
+             . '</html>';
+    }
+    
+    /**
+     * Genera URL de baja para emails de prueba (método simplificado)
+     */
+    private function get_unsub_url($email) {
+        if (empty($email)) return home_url('/unsubscribe/');
+        
+        // Para simplicidad en tests, generar token básico
+        $token = substr(md5($email . 'wec_unsub_' . wp_salt()), 0, 16);
+        return home_url('/unsubscribe/?e=' . rawurlencode($email) . '&t=' . $token);
+    }
+    
     /**
      * Establece el tipo de contenido para emails HTML
      * @return string
