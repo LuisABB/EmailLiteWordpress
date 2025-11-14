@@ -7,11 +7,25 @@
  * - Configuración desde archivos .env
  * - Setup de PHPMailer
  * - Envío de emails de prueba
+ * - Renderizado seguro de plantillas con fallback
  * 
  * @since 3.0.0
  */
 
 if (!defined('ABSPATH')) exit;
+
+/**
+ * Interfaz para renderizadores de plantillas
+ * Permite implementaciones futuras sin acoplamiento fuerte
+ */
+interface WEC_Template_Renderer_Interface {
+    /**
+     * Renderiza una plantilla de email
+     * @param int $template_id ID de la plantilla
+     * @return array|WP_Error [subject, html_content] o error
+     */
+    public function render_template_content($template_id);
+}
 
 if (!class_exists('WEC_SMTP_Manager')) :
 
@@ -20,9 +34,14 @@ class WEC_SMTP_Manager {
     /** @var WEC_SMTP_Manager Instancia única */
     private static $instance = null;
     
+    /** @var WEC_Template_Renderer_Interface|null Renderizador de plantillas */
+    private $template_renderer = null;
+    
     /** Constantes para configuración */
     const OPT_SMTP = 'wec_smtp_settings';
     const SEND_TEST_ACTION = 'wec_send_test';
+    const ENV_PATH = 'programData/emailsWishList/.env';
+    const EMAIL_TEMPLATE_POST_TYPE = 'wec_email_tpl';
     
     /**
      * Obtiene la instancia única (Singleton)
@@ -40,6 +59,52 @@ class WEC_SMTP_Manager {
      */
     private function __construct() {
         $this->init_hooks();
+        $this->init_template_renderer();
+    }
+    
+    /**
+     * Inicializa el renderizador de plantillas
+     */
+    private function init_template_renderer() {
+        // Intentar configurar el Template Manager si está disponible
+        if (class_exists('WEC_Template_Manager')) {
+            try {
+                $manager = WEC_Template_Manager::get_instance();
+                if ($manager instanceof WEC_Template_Renderer_Interface) {
+                    $this->template_renderer = $manager;
+                }
+            } catch (Exception $e) {
+                error_log('WEC_SMTP_Manager: Error inicializando Template Manager: ' . $e->getMessage());
+            }
+        }
+    }
+    
+    /**
+     * Permite configurar un renderizador de plantillas personalizado
+     * @param WEC_Template_Renderer_Interface $renderer
+     */
+    public function set_template_renderer(WEC_Template_Renderer_Interface $renderer) {
+        $this->template_renderer = $renderer;
+    }
+    
+    /**
+     * Obtiene la ruta completa del archivo .env
+     * @return string
+     */
+    private function get_env_file_path() {
+        return ABSPATH . self::ENV_PATH;
+    }
+    
+    /**
+     * Obtiene las plantillas de email disponibles
+     * @return WP_Post[]
+     */
+    private function get_email_templates() {
+        return get_posts([
+            'post_type'   => self::EMAIL_TEMPLATE_POST_TYPE, 
+            'numberposts' => -1, 
+            'post_status' => ['publish', 'draft']
+        ]);
     }
     
     /**
@@ -65,7 +130,7 @@ class WEC_SMTP_Manager {
         }
         
         // Verificar si existe archivo .env
-        $env_path = ABSPATH . 'programData/emailsWishList/.env';
+        $env_path = $this->get_env_file_path();
         $env = [];
         $env_active = false;
         
@@ -93,11 +158,7 @@ class WEC_SMTP_Manager {
         $this->show_test_message();
         
         // Obtener plantillas disponibles
-        $templates = get_posts([
-            'post_type'   => 'wec_email_tpl', 
-            'numberposts' => -1, 
-            'post_status' => ['publish', 'draft']
-        ]);
+        $templates = $this->get_email_templates();
         
         $this->render_smtp_form($config, $env_active, $templates);
     }
@@ -243,7 +304,7 @@ class WEC_SMTP_Manager {
         
         // Incluir modal de vista previa si hay plantillas
         if ($templates) {
-            $this->render_preview_modal();
+            echo $this->render_preview_modal();
         }
     }
     
@@ -294,28 +355,24 @@ class WEC_SMTP_Manager {
      * Renderiza información adicional
      */
     private function render_additional_info() {
-        $templates = get_posts([
-            'post_type'   => 'wec_email_tpl', 
-            'numberposts' => -1, 
-            'post_status' => ['publish', 'draft']
-        ]);
+        $templates = $this->get_email_templates();
         ?>
         <h3>Gestión de Plantillas</h3>
         <?php if ($templates): ?>
         <p>
-            <a class="button" href="<?php echo esc_url(admin_url('edit.php?post_type=wec_email_tpl')); ?>">Gestionar Plantillas</a>
-            <a class="button button-secondary" href="<?php echo esc_url(admin_url('post-new.php?post_type=wec_email_tpl')); ?>">Crear Nueva Plantilla</a>
+            <a class="button" href="<?php echo esc_url(admin_url('edit.php?post_type=' . self::EMAIL_TEMPLATE_POST_TYPE)); ?>">Gestionar Plantillas</a>
+            <a class="button button-secondary" href="<?php echo esc_url(admin_url('post-new.php?post_type=' . self::EMAIL_TEMPLATE_POST_TYPE)); ?>">Crear Nueva Plantilla</a>
         </p>
         <?php else: ?>
         <p>
             <strong>No hay plantillas creadas.</strong> 
-            <a class="button button-primary" href="<?php echo esc_url(admin_url('post-new.php?post_type=wec_email_tpl')); ?>">Crear Primera Plantilla</a>
+            <a class="button button-primary" href="<?php echo esc_url(admin_url('post-new.php?post_type=' . self::EMAIL_TEMPLATE_POST_TYPE)); ?>">Crear Primera Plantilla</a>
         </p>
         <?php endif; ?>
         
         <h3>Configuración .env (Opcional)</h3>
         <p>Para mayor seguridad, puedes configurar los datos SMTP en un archivo <code>.env</code> en la ruta:</p>
-        <code><?php echo esc_html(ABSPATH . 'programData/emailsWishList/.env'); ?></code>
+        <code><?php echo esc_html($this->get_env_file_path()); ?></code>
         
         <p>Ejemplo de contenido del archivo .env:</p>
         <pre style="background: #f0f0f0; padding: 10px; border-radius: 4px; font-family: monospace;">
@@ -334,7 +391,7 @@ FROM_EMAIL=noreply@tudominio.com
      * Renderiza el modal de vista previa
      */
     private function render_preview_modal() {
-        echo '
+        return '
         <div id="wec-preview-modal" style="display:none;">
             <div id="wec-preview-wrap">
                 <div class="wec-toolbar">
@@ -404,7 +461,7 @@ FROM_EMAIL=noreply@tudominio.com
      * @return array
      */
     public function get_current_smtp_config() {
-        $env_path = ABSPATH . 'programData/emailsWishList/.env';
+        $env_path = $this->get_env_file_path();
         $env = [];
         
         if (file_exists($env_path)) {
@@ -434,18 +491,13 @@ FROM_EMAIL=noreply@tudominio.com
         
         // Verificar que la plantilla existe
         $template = get_post($tpl_id);
-        if (!$template || $template->post_type !== 'wec_email_tpl') {
+        if (!$template || $template->post_type !== self::EMAIL_TEMPLATE_POST_TYPE) {
             wp_die('Plantilla no encontrada o inválida.');
         }
         
         try {
-            // Renderizar plantilla usando el Template Manager
-            if (class_exists('WEC_Template_Manager')) {
-                $template_manager = WEC_Template_Manager::get_instance();
-                $template_result = $template_manager->render_template_content($tpl_id);
-            } else {
-                wp_die('Template Manager no disponible.');
-            }
+            // Renderizar plantilla con validaciones robustas
+            $template_result = $this->render_template_safely($tpl_id);
             
             if (is_wp_error($template_result)) {
                 wp_die('Error en la plantilla: ' . $template_result->get_error_message());
@@ -469,6 +521,111 @@ FROM_EMAIL=noreply@tudominio.com
     }
     
     /**
+     * Renderiza una plantilla de forma segura con validaciones completas
+     * @param int $tpl_id ID de la plantilla
+     * @return array|WP_Error [subject, html_content] o error
+     */
+    private function render_template_safely($tpl_id) {
+        // Validar que la plantilla existe
+        $template = get_post($tpl_id);
+        if (!$template || $template->post_type !== self::EMAIL_TEMPLATE_POST_TYPE) {
+            return new WP_Error('invalid_template', 'Plantilla no encontrada o inválida.');
+        }
+        
+        // Usar renderizador configurado si está disponible
+        if ($this->template_renderer !== null) {
+            try {
+                $result = $this->template_renderer->render_template_content($tpl_id);
+                
+                // Validar que el resultado tiene la estructura esperada
+                if (is_array($result) && count($result) === 2) {
+                    return $result;
+                } elseif (is_wp_error($result)) {
+                    return $result;
+                } else {
+                    error_log('WEC_SMTP_Manager: Template renderer devolvió resultado inválido');
+                    // Continuar con fallback
+                }
+            } catch (Exception $e) {
+                error_log('WEC_SMTP_Manager: Error en template renderer: ' . $e->getMessage());
+                // Continuar con fallback
+            }
+        }
+        
+        // Intentar usar WEC_Template_Manager directamente como fallback
+        if (class_exists('WEC_Template_Manager')) {
+            try {
+                $template_manager = WEC_Template_Manager::get_instance();
+                
+                // Verificar que el método existe antes de llamarlo
+                if (method_exists($template_manager, 'render_template_content')) {
+                    $result = $template_manager->render_template_content($tpl_id);
+                    
+                    // Validar que el resultado tiene la estructura esperada
+                    if (is_array($result) && count($result) === 2) {
+                        return $result;
+                    } elseif (is_wp_error($result)) {
+                        return $result;
+                    }
+                }
+            } catch (Exception $e) {
+                error_log('WEC_SMTP_Manager: Error al usar Template Manager: ' . $e->getMessage());
+            }
+        }
+        
+        // Fallback final: renderizar plantilla manualmente
+        return $this->render_template_fallback($template);
+    }
+    
+    /**
+     * Fallback para renderizar plantilla cuando Template Manager no está disponible
+     * @param WP_Post $template
+     * @return array|WP_Error [subject, html_content] o error
+     */
+    private function render_template_fallback($template) {
+        try {
+            // Obtener asunto de la plantilla
+            $subject = get_post_meta($template->ID, '_wec_subject', true);
+            if (empty($subject)) {
+                $subject = $template->post_title ?: 'Email desde ' . get_bloginfo('name');
+            }
+            
+            // Obtener contenido HTML
+            $html_content = $template->post_content;
+            if (empty($html_content)) {
+                return new WP_Error('empty_template', 'La plantilla no tiene contenido.');
+            }
+            
+            // Aplicar filtros básicos de WordPress al contenido
+            $html_content = apply_filters('the_content', $html_content);
+            
+            // Reemplazar variables básicas
+            $html_content = $this->replace_template_variables($html_content);
+            
+            return [$subject, $html_content];
+            
+        } catch (Exception $e) {
+            return new WP_Error('fallback_error', 'Error en renderizado fallback: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Reemplaza variables básicas en plantillas cuando no hay Template Manager
+     * @param string $content
+     * @return string
+     */
+    private function replace_template_variables($content) {
+        $replacements = [
+            '{{site_name}}'    => get_bloginfo('name'),
+            '{{site_url}}'     => home_url(),
+            '{{current_year}}' => date('Y'),
+            '{{current_date}}' => date_i18n(get_option('date_format')),
+        ];
+        
+        return str_replace(array_keys($replacements), array_values($replacements), $content);
+    }
+
+    /**
      * Establece el tipo de contenido para emails HTML
      * @return string
      */
@@ -487,7 +644,11 @@ FROM_EMAIL=noreply@tudominio.com
         }
         
         $env = [];
-        $lines = file($file_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $lines = @file($file_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        
+        if ($lines === false) {
+            return [];
+        }
         
         foreach ($lines as $line) {
             // Ignorar comentarios
@@ -529,16 +690,21 @@ FROM_EMAIL=noreply@tudominio.com
      */
     public function get_config_status() {
         $config = $this->get_current_smtp_config();
-        $env_path = ABSPATH . 'programData/emailsWishList/.env';
+        $env_path = $this->get_env_file_path();
         
         return [
-            'env_file_exists'    => file_exists($env_path),
-            'host_configured'    => !empty($config['host']),
-            'auth_configured'    => !empty($config['user']),
-            'from_configured'    => !empty($config['from']),
-            'encryption'         => $config['secure'] ?: 'none',
-            'port'              => $config['port'] ?: 'default',
-            'is_fully_configured' => $this->is_smtp_configured(),
+            'env_file_exists'       => file_exists($env_path),
+            'env_file_path'         => $env_path,
+            'host_configured'       => !empty($config['host']),
+            'auth_configured'       => !empty($config['user']),
+            'from_configured'       => !empty($config['from']),
+            'encryption'            => $config['secure'] ?: 'none',
+            'port'                  => $config['port'] ?: 'default',
+            'is_fully_configured'   => $this->is_smtp_configured(),
+            'template_renderer'     => $this->template_renderer !== null ? get_class($this->template_renderer) : 'fallback',
+            'template_manager_available' => class_exists('WEC_Template_Manager'),
+            'template_method_exists' => class_exists('WEC_Template_Manager') && 
+                                       method_exists(WEC_Template_Manager::class, 'render_template_content'),
         ];
     }
 }

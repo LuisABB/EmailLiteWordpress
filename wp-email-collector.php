@@ -66,9 +66,6 @@ final class WEC_Email_Collector {
         add_action( 'admin_post_' . self::ADMIN_POST_PREVIEW_IFRAME, [ $this, 'handle_preview_iframe' ] );
         add_action( 'wp_ajax_'  . self::AJAX_ACTION_IFRAME, [ $this, 'ajax_preview_iframe_html' ] );
 
-        // Mailing - solo contenido HTML, SMTP se maneja en SMTP Manager
-        add_filter( 'wp_mail_content_type', function(){ return 'text/html'; } );
-
         // Agregar handlers para admin-post (excepto SMTP que maneja su propio manager)
         add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_CREATE,  [ $this, 'handle_create_campaign' ] );
         add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_UPDATE,  [ $this, 'handle_update_campaign' ] );
