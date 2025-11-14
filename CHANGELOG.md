@@ -2,6 +2,28 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
+## [6.0.0] - 2025-11-13 - Refactorización SMTP
+
+### 🔄 Arquitectura SMTP
+- **Separación SMTP**: Nueva clase `WEC_SMTP_Manager` independiente para configuración SMTP
+- **Autoloader compatible**: Carga automática del manager SMTP sin cambios en estructura existente
+- **Singleton pattern**: Gestión única y eficiente de la configuración SMTP
+
+### 🔧 Mejoras de Configuración
+- **UI mejorada**: Formularios SMTP con descriptions, placeholders y validaciones
+- **Mejor .env support**: Detección automática y mensajes informativos sobre modo .env
+- **Validaciones robustas**: Checks de seguridad y manejo de errores mejorado
+
+### ⚡ Código Limpio
+- **Responsabilidades separadas**: SMTP aislado del código principal (1,200+ líneas menos)
+- **100% retrocompatible**: Mismas opciones BD, hooks y estructura .env
+- **Extensible**: Base para agregar nuevos providers SMTP
+
+### 🛠️ Funcionalidades Técnicas
+- **Debug utilities**: Función `get_config_status()` para troubleshooting
+- **Config optimization**: Setup PHPMailer optimizado con timeouts y charset UTF-8
+- **Better error handling**: Mensajes claros y redirects seguros en tests SMTP
+
 ## [5.0.0] - 2025-11-11 - Refactorización y Mejoras UX
 
 ### 🔄 Refactoring Arquitectura
