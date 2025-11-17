@@ -216,11 +216,6 @@ final class WEC_Email_Collector {
 
     /*** Assets ***/
     public function enqueue_admin_assets( $hook ) {
-        // Debug: log the current hook to help identify the correct page hook
-        if (current_user_can('manage_options') && (strpos($hook, 'wec') !== false || strpos($hook, 'campaigns') !== false)) {
-            error_log("WEC Debug: Current admin hook is: " . $hook);
-        }
-        
         $is_wec      = ( strpos($hook, self::ROOT_MENU_SLUG) !== false );
         $is_wec_page = in_array($hook, [
             'toplevel_page_' . self::ROOT_MENU_SLUG,
@@ -237,12 +232,6 @@ final class WEC_Email_Collector {
             ( $hook === 'post.php'     && get_post_type( intval($_GET['post'] ?? 0) ) === self::CPT_TPL ) ||
             ( $hook === 'post-new.php' && ( $_GET['post_type'] ?? '' ) === self::CPT_TPL )
         );
-        
-        // Debug: log whether we're loading assets
-        if (current_user_can('manage_options') && (strpos($hook, 'wec') !== false || strpos($hook, 'campaigns') !== false)) {
-            $should_load = ( $is_wec || $is_wec_page || $is_wec_related || $is_tpl_list || $is_tpl_edit );
-            error_log("WEC Debug: Should load assets: " . ($should_load ? 'YES' : 'NO'));
-        }
         
         if ( ! ( $is_wec || $is_wec_page || $is_wec_related || $is_tpl_list || $is_tpl_edit ) ) return;
 
@@ -300,11 +289,9 @@ jQuery(function($){
 
   $(document).on('click','.wec-btn-preview, #wec-btn-preview',function(e){
     e.preventDefault();
-    console.log('Preview button clicked');
     
     if (typeof WEC_AJAX === 'undefined') { 
       alert('No se pudo iniciar vista previa - WEC_AJAX no definido'); 
-      console.error('WEC_AJAX not defined'); 
       return; 
     }
     
@@ -323,7 +310,6 @@ jQuery(function($){
     }
     
     var tplId = $templateSelect.val();
-    console.log('Template ID:', tplId, 'from selector:', $templateSelect.attr('id'));
     
     if(!tplId){ 
       alert('Selecciona una plantilla.'); 
@@ -343,13 +329,8 @@ jQuery(function($){
             + '?action=' + encodeURIComponent(WEC_AJAX.iframe_action)
             + '&wec_nonce=' + encodeURIComponent(WEC_AJAX.preview_nonce)
             + '&tpl_id=' + encodeURIComponent(tplId);
-    
-    console.log('Preview URL:', url);
 
     $.get(url).done(function(html){
-        console.log('Preview HTML received, length:', html.length);
-        console.log('HTML contains content:', html.indexOf('body') !== -1);
-        
         // Actualizar el asunto si está en el HTML
         if (html.indexOf('<title>') !== -1) {
             var titleMatch = html.match(/<title>(.*?)<\/title>/);
@@ -360,12 +341,10 @@ jQuery(function($){
         
         var d = $f[0].contentDocument || $f[0].contentWindow.document;
         try{ d.open(); d.write(html); d.close(); }catch(err){
-          console.error('Error writing to iframe:', err);
           var blob = new Blob([html], {type: 'text/html'});
           $f.attr('src', URL.createObjectURL(blob));
         }
     }).fail(function(xhr){
-        console.error('Preview failed:', xhr);
         var d = $f[0].contentDocument || $f[0].contentWindow.document;
         var msg = 'Error de vista previa ('+xhr.status+'): '+(xhr.responseText||'No se pudo cargar el contenido');
         if (d) { d.open(); d.write('<div style="font-family:Arial;padding:40px;text-align:center;"><h3 style="color:#e74c3c;">Error en la vista previa</h3><p>'+msg+'</p><button onclick="tb_remove();" style="background:#007cba;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Cerrar</button></div>'); d.close(); }
@@ -1557,8 +1536,8 @@ function wec_install_tables() {
         ) {$charset}");
         
         if ($result === false) {
-            // Si falla la creación, registrar error pero continuar
-            error_log('WEC: Error creating subscribers table: ' . $wpdb->last_error);
+            // Si falla la creación, continuar sin mostrar error en producción
+            // La tabla se creará en un intento posterior
         }
     }
     // Si la tabla existe, NO TOCAR NADA para evitar problemas de índices
