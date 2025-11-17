@@ -33,6 +33,8 @@ Todos los cambios importantes del proyecto serán documentados en este archivo.
 ### 🔐 Seguridad Mejorada
 - **Interfaces tipadas**: Validación estricta de tipos entre componentes
 - **Wrapper patterns**: Adaptadores seguros para compatibilidad hacia atrás
+- **Cron endpoint discreto**: Respuestas mínimas en producción para evitar exposición de métricas internas
+- **Filtros scoped**: wp_mail_content_type solo activo durante envío de campañas específicas
 - **Sanitización completa**: Validación de todos los inputs de campañas
 - **Token management**: Sistema seguro para cron externo y unsubscribe
 

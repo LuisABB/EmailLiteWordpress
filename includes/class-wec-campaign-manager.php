@@ -53,21 +53,42 @@ interface WEC_Template_Manager_Interface {
 }
 
 /**
- * Interfaz para gestores SMTP
- * Permite desacoplamiento del SMTP Manager
+ * Adaptador para Template Manager
+ * Permite compatibilidad con implementaciones que no siguen la interfaz
  */
-interface WEC_SMTP_Manager_Interface {
-    /**
-     * Obtiene la configuración SMTP actual
-     * @return array Configuración SMTP
-     */
-    public function get_current_smtp_config();
+class WEC_Template_Manager_Adapter implements WEC_Template_Manager_Interface {
+    /** @var object Instancia del Template Manager */
+    private $manager;
     
     /**
-     * Verifica si SMTP está configurado correctamente
-     * @return bool
+     * Constructor del adaptador
+     * @param object $template_manager Instancia del Template Manager
      */
-    public function is_smtp_configured();
+    public function __construct($template_manager) {
+        $this->manager = $template_manager;
+    }
+    
+    /**
+     * {@inheritdoc}
+     */
+    public function render_template_content($template_id) {
+        if (method_exists($this->manager, 'render_template_content')) {
+            return $this->manager->render_template_content($template_id);
+        }
+        return new WP_Error('method_not_found', 'Template Manager no tiene método render_template_content');
+    }
+    
+    /**
+     * {@inheritdoc}
+     */
+    public function validate_template($template_id) {
+        if (method_exists($this->manager, 'validate_template')) {
+            return $this->manager->validate_template($template_id);
+        }
+        // Validación básica como fallback
+        $post = get_post($template_id);
+        return ($post && $post->post_type === 'wec_email_tpl') ? true : new WP_Error('invalid_template', 'Plantilla no válida');
+    }
 }
 
 if (!class_exists('WEC_Campaign_Manager')) :
@@ -79,9 +100,6 @@ class WEC_Campaign_Manager {
     
     /** @var WEC_Template_Manager_Interface|null Gestor de plantillas */
     private $template_manager = null;
-    
-    /** @var WEC_SMTP_Manager_Interface|null Gestor SMTP */
-    private $smtp_manager = null;
     
     /** Constantes para base de datos */
     const DB_TABLE_JOBS = 'wec_jobs';
@@ -132,69 +150,11 @@ class WEC_Campaign_Manager {
                 if ($manager instanceof WEC_Template_Manager_Interface) {
                     $this->template_manager = $manager;
                 } else {
-                    // Crear wrapper para compatibilidad
-                    $this->template_manager = new class($manager) implements WEC_Template_Manager_Interface {
-                        private $manager;
-                        
-                        public function __construct($template_manager) {
-                            $this->manager = $template_manager;
-                        }
-                        
-                        public function render_template_content($template_id) {
-                            if (method_exists($this->manager, 'render_template_content')) {
-                                return $this->manager->render_template_content($template_id);
-                            }
-                            return new WP_Error('method_not_found', 'Template Manager no tiene método render_template_content');
-                        }
-                        
-                        public function validate_template($template_id) {
-                            if (method_exists($this->manager, 'validate_template')) {
-                                return $this->manager->validate_template($template_id);
-                            }
-                            // Validación básica como fallback
-                            $post = get_post($template_id);
-                            return ($post && $post->post_type === 'wec_email_tpl') ? true : new WP_Error('invalid_template', 'Plantilla no válida');
-                        }
-                    };
+                    // Crear adapter para compatibilidad
+                    $this->template_manager = new WEC_Template_Manager_Adapter($manager);
                 }
             } catch (Exception $e) {
                 error_log('WEC_Campaign_Manager: Error inicializando Template Manager: ' . $e->getMessage());
-            }
-        }
-        
-        // Configurar SMTP Manager si está disponible
-        if (class_exists('WEC_SMTP_Manager')) {
-            try {
-                $manager = WEC_SMTP_Manager::get_instance();
-                
-                if ($manager instanceof WEC_SMTP_Manager_Interface) {
-                    $this->smtp_manager = $manager;
-                } else {
-                    // Crear wrapper para compatibilidad
-                    $this->smtp_manager = new class($manager) implements WEC_SMTP_Manager_Interface {
-                        private $manager;
-                        
-                        public function __construct($smtp_manager) {
-                            $this->manager = $smtp_manager;
-                        }
-                        
-                        public function get_current_smtp_config() {
-                            if (method_exists($this->manager, 'get_current_smtp_config')) {
-                                return $this->manager->get_current_smtp_config();
-                            }
-                            return [];
-                        }
-                        
-                        public function is_smtp_configured() {
-                            if (method_exists($this->manager, 'is_smtp_configured')) {
-                                return $this->manager->is_smtp_configured();
-                            }
-                            return false;
-                        }
-                    };
-                }
-            } catch (Exception $e) {
-                error_log('WEC_Campaign_Manager: Error inicializando SMTP Manager: ' . $e->getMessage());
             }
         }
     }
@@ -213,9 +173,6 @@ class WEC_Campaign_Manager {
         add_action(self::CRON_HOOK, [$this, 'process_queue_cron']);
         add_action('wp', [$this, 'setup_recurring_cron']);
         add_action('init', [$this, 'handle_external_cron']);
-        
-        // Filtro para contenido HTML en emails
-        add_filter('wp_mail_content_type', [$this, 'set_mail_content_type']);
     }
     
     /**
@@ -228,7 +185,7 @@ class WEC_Campaign_Manager {
         
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $jobs = $wpdb->get_results("SELECT * FROM {$table_jobs} ORDER BY id DESC LIMIT 100");
+        $jobs = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$table_jobs} ORDER BY id DESC LIMIT %d", 100));
         $templates = $this->get_available_templates();
         
         $edit_job = isset($_GET['edit_job']) ? intval($_GET['edit_job']) : 0;
@@ -741,7 +698,13 @@ class WEC_Campaign_Manager {
                 'reset_links'   => true
             ]);
             
+            // Activar filtro HTML solo para este email
+            add_filter('wp_mail_content_type', [$this, 'set_mail_content_type']);
+            
             $ok = wp_mail($item->email, $subject, $html_personal, $headers);
+            
+            // Remover filtro inmediatamente después del envío
+            remove_filter('wp_mail_content_type', [$this, 'set_mail_content_type']);
             
             if ($ok) {
                 $this->mark_item_sent($item->id, $item->attempts);
@@ -765,7 +728,7 @@ class WEC_Campaign_Manager {
         
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $pending_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')");
+        $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')"));
         
         if ($pending_jobs > 0) {
             if (!wp_next_scheduled(self::CRON_HOOK)) {
@@ -800,48 +763,38 @@ class WEC_Campaign_Manager {
         ];
         
         ob_start();
-        $start_time = microtime(true);
         
         try {
             $this->process_queue_cron();
-            $execution_time = round((microtime(true) - $start_time) * 1000, 2);
             
             global $wpdb;
             $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
-            $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
             
-            $pending_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')");
-            $queued_items = $wpdb->get_var("SELECT COUNT(*) FROM {$table_items} WHERE status='queued'");
-            $expired_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status='expired'");
+            $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')"));
             
             ob_get_clean();
             
             http_response_code(200);
             header('Content-Type: text/plain; charset=UTF-8');
-            echo "✅ WEC CRON EJECUTADO CORRECTAMENTE\n";
-            echo "⏱️  Tiempo: {$execution_time}ms\n";
-            echo "📧 Trabajos pendientes: {$pending_jobs}\n";
-            echo "📋 Items en cola: {$queued_items}\n";
-            if ($expired_jobs > 0) {
-                echo "⚠️  Campañas expiradas: {$expired_jobs}\n";
-            }
-            echo "🕐 Hora: " . date('Y-m-d H:i:s') . " (" . date_default_timezone_get() . ")\n";
-            echo "🏠 IP: " . $debug_info['ip'] . "\n";
             
+            // Respuesta minimalista para producción
+            echo "OK\n";
             if ($pending_jobs > 0) {
-                echo "\n💡 INFO: Hay trabajos pendientes, el cron debería ejecutarse nuevamente.\n";
+                echo "PENDING\n";
             } else {
-                echo "\n🎉 INFO: No hay trabajos pendientes.\n";
+                echo "COMPLETE\n";
             }
+            echo date('Y-m-d H:i:s') . "\n";
             
         } catch (Exception $e) {
             ob_end_clean();
             
             http_response_code(500);
             header('Content-Type: text/plain; charset=UTF-8');
-            echo "❌ ERROR EN CRON:\n";
-            echo $e->getMessage() . "\n";
-            echo "🕐 Hora: " . date('Y-m-d H:i:s') . "\n";
+            
+            // Error mínimo para producción
+            echo "ERROR\n";
+            echo date('Y-m-d H:i:s') . "\n";
             
             error_log("WEC_EXTERNAL_CRON_ERROR: " . $e->getMessage());
         }
@@ -850,7 +803,9 @@ class WEC_Campaign_Manager {
     }
     
     /**
-     * Establece tipo de contenido HTML para emails
+     * Establece tipo de contenido HTML para emails de campaña
+     * NOTA: Este filtro se activa/desactiva solo durante el envío de emails
+     * de campaña para evitar afectar otros emails del sitio
      */
     public function set_mail_content_type() {
         return 'text/html';
@@ -1022,24 +977,59 @@ class WEC_Campaign_Manager {
         
         if (empty($emails)) return $emails;
         
+        // Limitar el tamaño del array para prevenir problemas de memoria/rendimiento
+        $max_batch_size = 1000;
+        if (count($emails) > $max_batch_size) {
+            error_log("WEC: Procesando lista grande de emails (" . count($emails) . "), dividiendo en lotes");
+        }
+        
         global $wpdb;
         $table = $wpdb->prefix . self::DB_TABLE_SUBSCRIBERS;
-        $placeholders = implode(',', array_fill(0, count($emails), '%s'));
-        $sql = $wpdb->prepare("SELECT email FROM {$table} WHERE status='unsubscribed' AND email IN ($placeholders)", $emails);
-        $blocked = $wpdb->get_col($sql);
+        $blocked = [];
         
-        if (!$blocked) return $emails;
+        // Procesar en lotes para evitar problemas con consultas muy grandes
+        $chunks = array_chunk($emails, $max_batch_size);
         
-        $blocked = array_flip($blocked);
-        $out = [];
-        
-        foreach($emails as $e) {
-            if (!isset($blocked[$e])) {
-                $out[] = $e;
+        foreach ($chunks as $chunk) {
+            // Validar que todos los emails en el chunk son válidos
+            $valid_emails = array_filter($chunk, function($email) {
+                return is_email($email) && strlen($email) <= 254; // RFC 5321 limit
+            });
+            
+            if (empty($valid_emails)) {
+                continue;
+            }
+            
+            // Usar FIND_IN_SET en lugar de IN dinámico para mayor seguridad
+            $emails_string = implode(',', array_map(function($email) use ($wpdb) {
+                return $wpdb->_escape($email);
+            }, $valid_emails));
+            
+            // Consulta alternativa más segura usando EXISTS
+            $chunk_blocked = $wpdb->get_col($wpdb->prepare(
+                "SELECT email FROM {$table} 
+                 WHERE status = 'unsubscribed' 
+                 AND email IN (" . implode(',', array_fill(0, count($valid_emails), '%s')) . ")",
+                ...$valid_emails
+            ));
+            
+            if ($chunk_blocked) {
+                $blocked = array_merge($blocked, $chunk_blocked);
             }
         }
         
-        return $out;
+        if (empty($blocked)) return $emails;
+        
+        $blocked_lookup = array_flip($blocked);
+        $filtered = [];
+        
+        foreach($emails as $email) {
+            if (!isset($blocked_lookup[$email])) {
+                $filtered[] = $email;
+            }
+        }
+        
+        return $filtered;
     }
     
     /**
@@ -1146,7 +1136,14 @@ class WEC_Campaign_Manager {
         $token = $wpdb->get_var($wpdb->prepare("SELECT unsub_token FROM {$table} WHERE email=%s", $email));
         
         if (!$token) {
-            $token = bin2hex(random_bytes(16));
+            try {
+                $token = bin2hex(random_bytes(16));
+            } catch (Exception $e) {
+                // Fallback si random_bytes() falla
+                $token = wp_generate_password(32, true, true);
+                error_log('WEC: random_bytes() falló, usando wp_generate_password como fallback: ' . $e->getMessage());
+            }
+            
             $wpdb->query($wpdb->prepare(
                 "INSERT INTO {$table} (email, unsub_token) VALUES (%s,%s)
                  ON DUPLICATE KEY UPDATE unsub_token=VALUES(unsub_token)",
