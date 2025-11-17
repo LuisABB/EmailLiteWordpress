@@ -1211,16 +1211,8 @@ class WEC_Campaign_Manager {
             return false;
         }
         
-        // Insertar items
-        foreach($emails as $e) {
-            $wpdb->insert($table_items, [
-                'job_id' => $job_id,
-                'email' => $e,
-                'status' => 'queued',
-                'error' => '',
-                'attempts' => 0,
-            ], ['%d', '%s', '%s', '%s', '%d']);
-        }
+        // Insertar items usando bulk insert para mejor rendimiento
+        $this->bulk_insert_email_items($job_id, $emails);
         
         return $job_id;
     }
@@ -1278,6 +1270,83 @@ class WEC_Campaign_Manager {
             "UPDATE {$table_jobs} SET sent = sent + %d, failed = failed + %d WHERE id=%d", 
             $sent, $failed, $job_id
         ));
+    }
+    
+    /**
+     * Inserta emails en lotes para mejor rendimiento
+     * Utiliza bulk insert para evitar el problema N+1 con listas grandes de destinatarios
+     * 
+     * @param int $job_id ID del trabajo/campaña
+     * @param array $emails Lista de emails a insertar
+     * @return bool True si todas las inserciones fueron exitosas
+     */
+    private function bulk_insert_email_items($job_id, $emails) {
+        if (empty($emails)) {
+            return true;
+        }
+        
+        global $wpdb;
+        $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
+        
+        // Procesar en lotes de 500 para evitar problemas de memoria y límites MySQL
+        $batch_size = 500;
+        $total_batches = ceil(count($emails) / $batch_size);
+        $success_count = 0;
+        
+        for ($batch = 0; $batch < $total_batches; $batch++) {
+            $offset = $batch * $batch_size;
+            $batch_emails = array_slice($emails, $offset, $batch_size);
+            
+            if (empty($batch_emails)) {
+                continue;
+            }
+            
+            // Construir query de inserción masiva
+            $values = [];
+            $placeholders = [];
+            
+            foreach ($batch_emails as $email) {
+                // Validar y sanitizar cada email
+                $email = strtolower(trim($email));
+                if (!is_email($email) || strlen($email) > 254) { // RFC 5321 limit
+                    continue;
+                }
+                
+                $values[] = $job_id;           // %d
+                $values[] = $email;            // %s  
+                $values[] = 'queued';          // %s
+                $values[] = '';                // %s (error)
+                $values[] = 0;                 // %d (attempts)
+                
+                $placeholders[] = '(%d, %s, %s, %s, %d)';
+            }
+            
+            if (empty($placeholders)) {
+                continue;
+            }
+            
+            // Ejecutar inserción masiva para este lote
+            $query = $wpdb->prepare(
+                "INSERT INTO {$table_items} (job_id, email, status, error, attempts) VALUES " . implode(', ', $placeholders),
+                ...$values
+            );
+            
+            $result = $wpdb->query($query);
+            
+            if ($result !== false) {
+                $success_count += count($placeholders);
+            } else {
+                // Log error para debugging pero continúa con otros lotes
+                error_log("WEC: Error en bulk insert lote " . ($batch + 1) . " de " . $total_batches . ": " . $wpdb->last_error);
+            }
+        }
+        
+        // Log estadísticas para monitoreo
+        if ($success_count > 0) {
+            error_log("WEC: Bulk insert completado - {$success_count} emails insertados en {$total_batches} lotes para job {$job_id}");
+        }
+        
+        return $success_count > 0;
     }
     
     /**
