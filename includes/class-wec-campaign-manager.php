@@ -769,7 +769,7 @@ class WEC_Campaign_Manager {
         
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')"));
+        $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN(%s, %s)", 'pending', 'running'));
         
         if ($pending_jobs > 0) {
             if (!wp_next_scheduled(self::CRON_HOOK)) {
