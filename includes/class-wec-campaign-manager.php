@@ -114,7 +114,7 @@ class WEC_Campaign_Manager {
     
     /** Constantes para cron */
     const CRON_HOOK = 'wec_process_queue';
-    const CRON_SECRET_DEFAULT = 'curren_email_cron_2024';
+    const CRON_SECRET_OPTION = 'wec_cron_secret';
     
     /** Constantes para plantillas */
     const EMAIL_TEMPLATE_POST_TYPE = 'wec_email_tpl';
@@ -157,6 +157,47 @@ class WEC_Campaign_Manager {
                 error_log('WEC_Campaign_Manager: Error inicializando Template Manager: ' . $e->getMessage());
             }
         }
+    }
+    
+    /**
+     * Obtiene o crea un secreto seguro para el cron externo
+     * @return string Secreto de 32 caracteres para autenticación del cron
+     */
+    private function get_or_create_cron_secret() {
+        // Si hay constante definida, usarla (para compatibilidad)
+        if (defined('WEC_CRON_SECRET') && !empty(WEC_CRON_SECRET)) {
+            return WEC_CRON_SECRET;
+        }
+        
+        // Obtener secreto almacenado
+        $secret = get_option(self::CRON_SECRET_OPTION);
+        
+        // Si no existe o es el viejo secreto débil, generar uno nuevo
+        if (empty($secret) || $secret === 'curren_email_cron_2024') {
+            try {
+                // Generar secreto criptográficamente seguro
+                $secret = wp_generate_password(32, true, true);
+                
+                // Verificar que el secreto generado es válido y tiene la longitud correcta
+                if (strlen($secret) < 32) {
+                    throw new Exception('Generated secret too short');
+                }
+                
+                // Guardar en base de datos
+                update_option(self::CRON_SECRET_OPTION, $secret, false); // autoload = false
+                
+                error_log('WEC: Nuevo secreto de cron generado y almacenado de forma segura');
+                
+            } catch (Exception $e) {
+                // Fallback extremo si wp_generate_password falla
+                $secret = hash('sha256', uniqid(mt_rand(), true) . time() . wp_salt());
+                update_option(self::CRON_SECRET_OPTION, $secret, false);
+                
+                error_log('WEC: Error generando secreto, usando fallback hash: ' . $e->getMessage());
+            }
+        }
+        
+        return $secret;
     }
     
     /**
@@ -402,10 +443,10 @@ class WEC_Campaign_Manager {
      */
     private function get_status_html($status) {
         $status_configs = [
-            'pending' => ['label' => '⏳ Pendiente', 'class' => 'status-pending'],
-            'running' => ['label' => '▶️ Ejecutando', 'class' => 'status-running'],
-            'done'    => ['label' => '✅ Completada', 'class' => 'status-done'],
-            'expired' => ['label' => '⚠️ Expirada', 'class' => 'status-expired'],
+            'pending' => ['label' => __('⏳ Pendiente', 'wp-email-collector'), 'class' => 'status-pending'],
+            'running' => ['label' => __('▶️ Ejecutando', 'wp-email-collector'), 'class' => 'status-running'],
+            'done'    => ['label' => __('✅ Completada', 'wp-email-collector'), 'class' => 'status-done'],
+            'expired' => ['label' => __('⚠️ Expirada', 'wp-email-collector'), 'class' => 'status-expired'],
         ];
         
         $config = $status_configs[$status] ?? ['label' => esc_html($status), 'class' => ''];
@@ -431,7 +472,7 @@ class WEC_Campaign_Manager {
         $mode = sanitize_text_field($_POST['recipients_mode'] ?? 'scan');
         $list_raw = wp_unslash($_POST['recipients_list'] ?? '');
         $start_at = sanitize_text_field($_POST['start_at'] ?? '');
-        $rate_per_min = max(1, intval($_POST['rate_per_minute'] ?? 100));
+        $rate_per_min = max(1, min(1000, intval($_POST['rate_per_minute'] ?? 100)));
         
         if (!$tpl_id) {
             wp_die(__('Selecciona una plantilla.', 'wp-email-collector'));
@@ -484,7 +525,7 @@ class WEC_Campaign_Manager {
         
         $tpl_id = intval($_POST['tpl_id'] ?? 0);
         $start_at = sanitize_text_field($_POST['start_at'] ?? '');
-        $rate_per_min = max(1, intval($_POST['rate_per_minute'] ?? 100));
+        $rate_per_min = max(1, min(1000, intval($_POST['rate_per_minute'] ?? 100)));
         
         if (!$job_id || !$tpl_id) {
             wp_die(__('Datos incompletos.', 'wp-email-collector'));
@@ -745,22 +786,16 @@ class WEC_Campaign_Manager {
             return;
         }
         
-        $secret = $_GET['secret'] ?? '';
-        $expected_secret = defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : self::CRON_SECRET_DEFAULT;
+        $secret = sanitize_text_field($_GET['secret'] ?? '');
+        $expected_secret = $this->get_or_create_cron_secret();
         
-        if ($secret !== $expected_secret) {
+        if (!hash_equals($expected_secret, $secret)) {
             http_response_code(403);
             header('Content-Type: text/plain; charset=UTF-8');
             echo "ERROR 403: Clave secreta incorrecta\n";
             echo "Usa: ?wec_cron=true&secret=tu_clave_secreta\n";
             exit;
         }
-        
-        $debug_info = [
-            'timestamp' => date('Y-m-d H:i:s'),
-            'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
-            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'unknown'
-        ];
         
         ob_start();
         
@@ -770,7 +805,7 @@ class WEC_Campaign_Manager {
             global $wpdb;
             $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
             
-            $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')"));
+            $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN(%s, %s)", 'pending', 'running'));
             
             ob_get_clean();
             
@@ -1000,12 +1035,7 @@ class WEC_Campaign_Manager {
                 continue;
             }
             
-            // Usar FIND_IN_SET en lugar de IN dinámico para mayor seguridad
-            $emails_string = implode(',', array_map(function($email) use ($wpdb) {
-                return $wpdb->_escape($email);
-            }, $valid_emails));
-            
-            // Consulta alternativa más segura usando EXISTS
+            // Consulta segura usando prepared statements
             $chunk_blocked = $wpdb->get_col($wpdb->prepare(
                 "SELECT email FROM {$table} 
                  WHERE status = 'unsubscribed' 
@@ -1254,8 +1284,8 @@ class WEC_Campaign_Manager {
      * Obtiene URL para cron externo
      */
     private function get_external_cron_url() {
-        $secret = defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : self::CRON_SECRET_DEFAULT;
-        return home_url('/?wec_cron=true&secret=' . $secret);
+        $secret = $this->get_or_create_cron_secret();
+        return home_url('/?wec_cron=true&secret=' . urlencode($secret));
     }
     
     /**
