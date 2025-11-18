@@ -1342,6 +1342,11 @@ class WEC_Campaign_Manager {
                 continue; // Redundante pero explícito para claridad del código
             }
             
+            // Validación adicional antes de construir la query para mayor seguridad
+            if (empty($valid_emails)) {
+                continue; // Doble verificación para prevenir IN() vacío
+            }
+            
             // Consulta segura usando prepared statements con IN dinámico
             $chunk_blocked = $wpdb->get_col($wpdb->prepare(
                 "SELECT email FROM {$safe_table} 
