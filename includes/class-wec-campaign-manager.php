@@ -123,6 +123,10 @@ class WEC_Campaign_Manager {
     const DEFAULT_MAX_EMAILS_PER_MINUTE = 1000;
     const MIN_EMAILS_PER_MINUTE = 1;
     
+    /** Constantes para escaneo de emails */
+    const DEFAULT_USERS_SCAN_LIMIT = 5000;
+    const DEFAULT_COMMENTS_PER_BATCH = 1000;
+    
     /**
      * Obtiene la instancia única (Singleton)
      * @return WEC_Campaign_Manager
@@ -132,6 +136,31 @@ class WEC_Campaign_Manager {
             self::$instance = new self();
         }
         return self::$instance;
+    }
+    
+    /**
+     * Escapa nombres de tabla para uso seguro en consultas SQL
+     * Valida que el nombre siga el patrón esperado de WordPress y lo escapa apropiadamente
+     * 
+     * @param string $table_name Nombre de tabla sin escapar
+     * @return string Nombre de tabla escapado y validado para uso en SQL
+     * @throws InvalidArgumentException Si el nombre de tabla no es válido
+     */
+    private function escape_table_name($table_name) {
+        // Validar que el nombre de tabla siga el patrón esperado de WordPress
+        // Debe contener solo: letras, números, guiones bajos y el prefijo de WordPress
+        if (!preg_match('/^[a-zA-Z0-9_]+$/', $table_name)) {
+            throw new InvalidArgumentException("Invalid table name format: " . $table_name);
+        }
+        
+        // Verificar que comience con el prefijo de WordPress para mayor seguridad
+        global $wpdb;
+        if (!str_starts_with($table_name, $wpdb->prefix)) {
+            throw new InvalidArgumentException("Table name must start with WordPress prefix: " . $table_name);
+        }
+        
+        // WordPress esc_sql() también funciona para nombres de tabla
+        return esc_sql($table_name);
     }
     
     /**
@@ -310,8 +339,6 @@ class WEC_Campaign_Manager {
             </div>
             <?php
         }
-        
-        return $secret;
     }
     
     /**
@@ -361,13 +388,14 @@ class WEC_Campaign_Manager {
         
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $jobs = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$table_jobs} ORDER BY id DESC LIMIT %d", 100));
+        $safe_table_jobs = $this->escape_table_name($table_jobs);
+        $jobs = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$safe_table_jobs} ORDER BY id DESC LIMIT %d", 100));
         $templates = $this->get_available_templates();
         
         $edit_job = isset($_GET['edit_job']) ? intval($_GET['edit_job']) : 0;
         $job_to_edit = null;
         if ($edit_job) {
-            $job_to_edit = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table_jobs} WHERE id=%d", $edit_job));
+            $job_to_edit = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$safe_table_jobs} WHERE id=%d", $edit_job));
         }
         
         $this->render_campaigns_html($jobs, $templates, $job_to_edit);
@@ -757,12 +785,16 @@ class WEC_Campaign_Manager {
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
         $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
         
+        // Escapar nombres de tabla para prevenir inyección SQL
+        $safe_table_jobs = $this->escape_table_name($table_jobs);
+        $safe_table_items = $this->escape_table_name($table_items);
+        
         // PASO 1: Marcar como expiradas las campañas pendientes de días anteriores
         $yesterday_end_cdmx = date('Y-m-d 23:59:59', strtotime('-1 day'));
         $yesterday_end_utc = $this->convert_local_to_mysql($yesterday_end_cdmx);
         
         $expired_count = $wpdb->query($wpdb->prepare(
-            "UPDATE {$table_jobs} 
+            "UPDATE {$safe_table_jobs} 
              SET status = 'expired' 
              WHERE status = 'pending' 
              AND start_at <= %s", 
@@ -778,8 +810,8 @@ class WEC_Campaign_Manager {
         $cleanup_date_utc = $this->convert_local_to_mysql($cleanup_date);
         
         $cleanup_count = $wpdb->query($wpdb->prepare(
-            "DELETE j, i FROM {$table_jobs} j 
-             LEFT JOIN {$table_items} i ON j.id = i.job_id 
+            "DELETE j, i FROM {$safe_table_jobs} j 
+             LEFT JOIN {$safe_table_items} i ON j.id = i.job_id 
              WHERE j.status = 'expired' 
              AND j.start_at <= %s", 
             $cleanup_date_utc
@@ -798,7 +830,7 @@ class WEC_Campaign_Manager {
         $today_end_utc = $this->convert_local_to_mysql($today_end_cdmx);
         
         $job = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$table_jobs} 
+            "SELECT * FROM {$safe_table_jobs} 
              WHERE status IN('pending','running') 
              AND start_at <= %s 
              AND start_at >= %s 
@@ -821,7 +853,7 @@ class WEC_Campaign_Manager {
         
         // Procesar por lote
         $batch = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM {$table_items} WHERE job_id=%d AND status='queued' LIMIT %d", 
+            "SELECT * FROM {$safe_table_items} WHERE job_id=%d AND status='queued' LIMIT %d", 
             $job->id, $limit
         ));
         
@@ -836,7 +868,7 @@ class WEC_Campaign_Manager {
         
         // Programar siguiente ejecución si hay más trabajo pendiente
         $pending_count = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$table_items} WHERE job_id=%d AND status='queued'", 
+            "SELECT COUNT(*) FROM {$safe_table_items} WHERE job_id=%d AND status='queued'", 
             $job->id
         ));
         
@@ -846,7 +878,7 @@ class WEC_Campaign_Manager {
         
         // Verificar si hay otros trabajos pendientes para procesar
         $next_job = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$table_jobs} 
+            "SELECT * FROM {$safe_table_jobs} 
              WHERE status IN('pending','running') 
              AND start_at <= %s 
              AND start_at >= %s 
@@ -875,6 +907,7 @@ class WEC_Campaign_Manager {
             // Error en la plantilla - marcar job como fallido
             global $wpdb;
             $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
+            $safe_table_jobs = $this->escape_table_name($table_jobs);
             $wpdb->update($table_jobs, ['status' => 'failed'], ['id' => $job->id], ['%s'], ['%d']);
             error_log("WEC: Error al renderizar plantilla {$job->tpl_id} para job {$job->id}: " . $template_result->get_error_message());
             return;
@@ -940,7 +973,8 @@ class WEC_Campaign_Manager {
         
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN(%s, %s)", 'pending', 'running'));
+        $safe_table_jobs = $this->escape_table_name($table_jobs);
+        $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$safe_table_jobs} WHERE status IN(%s, %s)", 'pending', 'running'));
         
         if ($pending_jobs > 0) {
             if (!wp_next_scheduled(self::CRON_HOOK)) {
@@ -972,13 +1006,18 @@ class WEC_Campaign_Manager {
         // Verificar secreto actual
         $is_valid = hash_equals($expected_secret, $secret);
         
-        // Durante período de gracia, también aceptar secreto viejo
-        if (!$is_valid && $this->is_in_migration_grace_period()) {
-            $is_valid = hash_equals('curren_email_cron_2024', $secret);
-            if ($is_valid) {
+        // Durante período de gracia, también aceptar secreto viejo con timing-safe comparison
+        // Usar OR lógico para mantener tiempo de ejecución constante independientemente del resultado
+        $legacy_valid = false;
+        if ($this->is_in_migration_grace_period()) {
+            $legacy_valid = hash_equals('curren_email_cron_2024', $secret);
+            if ($legacy_valid) {
                 error_log('WEC MIGRATION: Cron ejecutado con secreto viejo durante período de gracia. Por favor actualiza a la nueva URL.');
             }
         }
+        
+        // Combinar resultados de forma timing-safe
+        $is_valid = $is_valid || $legacy_valid;
         
         if (!$is_valid) {
             http_response_code(403);
@@ -995,8 +1034,9 @@ class WEC_Campaign_Manager {
             
             global $wpdb;
             $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
+            $safe_table_jobs = $this->escape_table_name($table_jobs);
             
-            $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN(%s, %s)", 'pending', 'running'));
+            $pending_jobs = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$safe_table_jobs} WHERE status IN(%s, %s)", 'pending', 'running'));
             
             ob_get_clean();
             
@@ -1157,17 +1197,21 @@ class WEC_Campaign_Manager {
     private function gather_emails_full_scan() {
         $emails = [];
         
-        // Usuarios
-        $users = get_users(['fields' => ['user_email'], 'number' => 5000]);
+        // Obtener límites configurables para el escaneo
+        $user_limit = $this->get_users_scan_limit();
+        $comments_per_batch = $this->get_comments_per_batch();
+        
+        // Usuarios con límite configurable
+        $users = get_users(['fields' => ['user_email'], 'number' => $user_limit]);
         foreach($users as $u) {
             if (is_email($u->user_email)) {
                 $emails[] = strtolower($u->user_email);
             }
         }
         
-        // Comentarios paginados
+        // Comentarios paginados con tamaño de lote configurable
         $paged = 1;
-        $per = 1000;
+        $per = $comments_per_batch;
         
         do {
             $cmts = get_comments([
@@ -1191,6 +1235,48 @@ class WEC_Campaign_Manager {
         } while (count($cmts) === $per);
         
         return array_values(array_unique($emails));
+    }
+    
+    /**
+     * Obtiene el límite configurable para escaneo de usuarios
+     * Permite configuración via constante WEC_USERS_SCAN_LIMIT o filtro
+     * 
+     * @return int Límite máximo de usuarios a escanear (por defecto: 5000)
+     */
+    private function get_users_scan_limit() {
+        // 1. Verificar si hay constante definida (configuración de servidor)
+        if (defined('WEC_USERS_SCAN_LIMIT') && is_numeric(WEC_USERS_SCAN_LIMIT)) {
+            $limit = max(100, intval(WEC_USERS_SCAN_LIMIT)); // Mínimo 100 usuarios
+        } else {
+            $limit = self::DEFAULT_USERS_SCAN_LIMIT;
+        }
+        
+        // 2. Permitir filtros de WordPress para personalización avanzada
+        $filtered_limit = apply_filters('wec_users_scan_limit', $limit);
+        
+        // 3. Asegurar que el límite filtrado sea válido
+        return max(100, intval($filtered_limit));
+    }
+    
+    /**
+     * Obtiene el tamaño de lote configurable para escaneo de comentarios
+     * Permite configuración via constante WEC_COMMENTS_PER_BATCH o filtro
+     * 
+     * @return int Número de comentarios por lote (por defecto: 1000, rango: 100-5000)
+     */
+    private function get_comments_per_batch() {
+        // 1. Verificar si hay constante definida (configuración de servidor)
+        if (defined('WEC_COMMENTS_PER_BATCH') && is_numeric(WEC_COMMENTS_PER_BATCH)) {
+            $batch_size = max(100, min(5000, intval(WEC_COMMENTS_PER_BATCH))); // Rango 100-5000
+        } else {
+            $batch_size = self::DEFAULT_COMMENTS_PER_BATCH;
+        }
+        
+        // 2. Permitir filtros de WordPress para personalización avanzada
+        $filtered_batch_size = apply_filters('wec_comments_per_batch', $batch_size);
+        
+        // 3. Asegurar que el tamaño de lote filtrado sea válido
+        return max(100, min(5000, intval($filtered_batch_size)));
     }
     
     /**
@@ -1228,6 +1314,7 @@ class WEC_Campaign_Manager {
         
         global $wpdb;
         $table = $wpdb->prefix . self::DB_TABLE_SUBSCRIBERS;
+        $safe_table = $this->escape_table_name($table);
         $blocked = [];
         
         // Procesar en lotes para evitar problemas con consultas muy grandes
@@ -1243,9 +1330,15 @@ class WEC_Campaign_Manager {
                 continue;
             }
             
-            // Consulta segura usando prepared statements
+            // Verificar explícitamente que tenemos emails válidos antes de construir la query
+            // Esto previene construir "IN ()" que es sintaxis SQL inválida
+            if (count($valid_emails) === 0) {
+                continue; // Redundante pero explícito para claridad del código
+            }
+            
+            // Consulta segura usando prepared statements con IN dinámico
             $chunk_blocked = $wpdb->get_col($wpdb->prepare(
-                "SELECT email FROM {$table} 
+                "SELECT email FROM {$safe_table} 
                  WHERE status = 'unsubscribed' 
                  AND email IN (" . implode(',', array_fill(0, count($valid_emails), '%s')) . ")",
                 ...$valid_emails
@@ -1276,8 +1369,9 @@ class WEC_Campaign_Manager {
     private function is_unsubscribed($email) {
         global $wpdb;
         $table = $wpdb->prefix . self::DB_TABLE_SUBSCRIBERS;
+        $safe_table = $this->escape_table_name($table);
         $email = strtolower(trim($email));
-        $st = $wpdb->get_var($wpdb->prepare("SELECT status FROM {$table} WHERE email=%s", $email));
+        $st = $wpdb->get_var($wpdb->prepare("SELECT status FROM {$safe_table} WHERE email=%s", $email));
         return ($st === 'unsubscribed');
     }
     
@@ -1369,9 +1463,10 @@ class WEC_Campaign_Manager {
         
         global $wpdb;
         $table = $wpdb->prefix . self::DB_TABLE_SUBSCRIBERS;
+        $safe_table = $this->escape_table_name($table);
         $email = strtolower(trim($email));
         
-        $token = $wpdb->get_var($wpdb->prepare("SELECT unsub_token FROM {$table} WHERE email=%s", $email));
+        $token = $wpdb->get_var($wpdb->prepare("SELECT unsub_token FROM {$safe_table} WHERE email=%s", $email));
         
         if (!$token) {
             try {
@@ -1383,7 +1478,7 @@ class WEC_Campaign_Manager {
             }
             
             $wpdb->query($wpdb->prepare(
-                "INSERT INTO {$table} (email, unsub_token) VALUES (%s,%s)
+                "INSERT INTO {$safe_table} (email, unsub_token) VALUES (%s,%s)
                  ON DUPLICATE KEY UPDATE unsub_token=VALUES(unsub_token)",
                 $email, $token
             ));
@@ -1474,8 +1569,9 @@ class WEC_Campaign_Manager {
     private function update_job_stats($job_id, $sent, $failed) {
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
+        $safe_table_jobs = $this->escape_table_name($table_jobs);
         $wpdb->query($wpdb->prepare(
-            "UPDATE {$table_jobs} SET sent = sent + %d, failed = failed + %d WHERE id=%d", 
+            "UPDATE {$safe_table_jobs} SET sent = sent + %d, failed = failed + %d WHERE id=%d", 
             $sent, $failed, $job_id
         ));
     }
@@ -1483,7 +1579,7 @@ class WEC_Campaign_Manager {
     /**
      * Inserta emails en lotes para mejor rendimiento
      * Utiliza bulk insert para evitar el problema N+1 con listas grandes de destinatarios
-     * Incluye protección contra límites de max_allowed_packet de MySQL
+     * Incluye protección contra límites de max_allowed_packet de MySQL con batching optimizado
      * 
      * @param int $job_id ID del trabajo/campaña
      * @param array $emails Lista de emails a insertar
@@ -1497,55 +1593,33 @@ class WEC_Campaign_Manager {
         global $wpdb;
         $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
         
-        // Procesar en lotes adaptativos para evitar límites de MySQL
-        $batch_size = 500;
-        $max_query_size = 1048576; // 1MB por defecto (muy conservador)
+        // Pre-calcular tamaño óptimo de lote para evitar overhead en cada iteración
+        $optimal_batch_size = $this->calculate_optimal_batch_size();
         
-        // Intentar detectar max_allowed_packet de MySQL
-        $mysql_limit = $wpdb->get_var("SELECT @@max_allowed_packet");
-        if ($mysql_limit && is_numeric($mysql_limit)) {
-            // Usar 50% del límite real para margen de seguridad
-            $max_query_size = intval($mysql_limit * 0.5);
+        // Pre-filtrar y validar emails una sola vez para mejor rendimiento
+        $valid_emails = $this->pre_filter_emails($emails);
+        
+        if (empty($valid_emails)) {
+            return true;
         }
         
-        $total_batches = ceil(count($emails) / $batch_size);
+        $total_batches = ceil(count($valid_emails) / $optimal_batch_size);
         $success_count = 0;
         
+        // Procesar en lotes pre-calculados sin verificaciones costosas por iteración
         for ($batch = 0; $batch < $total_batches; $batch++) {
-            $offset = $batch * $batch_size;
-            $batch_emails = array_slice($emails, $offset, $batch_size);
+            $offset = $batch * $optimal_batch_size;
+            $batch_emails = array_slice($valid_emails, $offset, $optimal_batch_size);
             
             if (empty($batch_emails)) {
                 continue;
             }
             
-            // Construir query de inserción masiva con verificación de tamaño
+            // Construir query de inserción masiva sin cálculos adaptativos
             $values = [];
             $placeholders = [];
-            $estimated_size = 200; // Tamaño base de la query (INSERT INTO...)
             
             foreach ($batch_emails as $email) {
-                // Validar y sanitizar cada email
-                $email = strtolower(trim($email));
-                if (!is_email($email) || strlen($email) > 254) { // RFC 5321 limit
-                    continue;
-                }
-                
-                // Estimar tamaño de este registro en la query
-                $record_size = strlen($email) + 50; // email + placeholders + separadores
-                
-                // Verificar si agregar este registro excedería el límite
-                if ($estimated_size + $record_size > $max_query_size && !empty($placeholders)) {
-                    // Ejecutar query parcial y reiniciar arrays
-                    $this->execute_bulk_insert_batch($table_items, $values, $placeholders, $batch + 1, $total_batches);
-                    $success_count += count($placeholders);
-                    
-                    // Reiniciar para nuevo sub-lote
-                    $values = [];
-                    $placeholders = [];
-                    $estimated_size = 200;
-                }
-                
                 $values[] = $job_id;           // %d
                 $values[] = $email;            // %s  
                 $values[] = 'queued';          // %s
@@ -1553,22 +1627,80 @@ class WEC_Campaign_Manager {
                 $values[] = 0;                 // %d (attempts)
                 
                 $placeholders[] = '(%d, %s, %s, %s, %d)';
-                $estimated_size += $record_size;
             }
             
-            // Ejecutar el lote restante si hay datos
-            if (!empty($placeholders)) {
-                $this->execute_bulk_insert_batch($table_items, $values, $placeholders, $batch + 1, $total_batches);
+            // Ejecutar lote completo
+            $batch_success = $this->execute_bulk_insert_batch($table_items, $values, $placeholders, $batch + 1, $total_batches);
+            if ($batch_success) {
                 $success_count += count($placeholders);
             }
         }
         
         // Log estadísticas para monitoreo
         if ($success_count > 0) {
-            error_log("WEC: Bulk insert completado - {$success_count} emails insertados para job {$job_id} (límite query: " . number_format($max_query_size / 1024) . "KB)");
+            error_log("WEC: Bulk insert optimizado completado - {$success_count} emails insertados para job {$job_id} en {$total_batches} lotes (tamaño: {$optimal_batch_size})");
         }
         
         return $success_count > 0;
+    }
+    
+    /**
+     * Pre-calcula el tamaño óptimo de lote basado en límites de MySQL
+     * Evita cálculos costosos en cada iteración para mejor rendimiento
+     * 
+     * @return int Tamaño óptimo de lote para bulk insert
+     */
+    private function calculate_optimal_batch_size() {
+        static $cached_batch_size = null;
+        
+        // Usar caché estático para evitar recálculos en la misma sesión
+        if ($cached_batch_size !== null) {
+            return $cached_batch_size;
+        }
+        
+        global $wpdb;
+        
+        // Detectar límite de MySQL una sola vez
+        $mysql_limit = $wpdb->get_var("SELECT @@max_allowed_packet");
+        $max_query_size = $mysql_limit && is_numeric($mysql_limit) 
+            ? intval($mysql_limit * 0.4) // 40% del límite para mayor seguridad
+            : 1048576; // 1MB fallback conservador
+        
+        // Estimar tamaño promedio por registro (email + overhead de SQL)
+        // Email promedio: ~30 chars, placeholders + valores: ~80 chars total
+        $avg_record_size = 80;
+        $query_overhead = 200; // Tamaño base de INSERT statement
+        
+        // Calcular tamaño óptimo de lote
+        $calculated_batch_size = floor(($max_query_size - $query_overhead) / $avg_record_size);
+        
+        // Aplicar límites prácticos para balancear rendimiento vs memoria
+        $cached_batch_size = max(100, min(1000, $calculated_batch_size));
+        
+        return $cached_batch_size;
+    }
+    
+    /**
+     * Pre-filtra y valida emails una sola vez para evitar validación repetitiva
+     * Optimiza rendimiento eliminando emails inválidos antes del procesamiento
+     * 
+     * @param array $emails Lista de emails sin filtrar
+     * @return array Lista de emails válidos y sanitizados
+     */
+    private function pre_filter_emails($emails) {
+        $valid_emails = [];
+        
+        foreach ($emails as $email) {
+            $email = strtolower(trim($email));
+            
+            // Validación rápida de formato y longitud
+            if (is_email($email) && strlen($email) <= 254) { // RFC 5321 limit
+                $valid_emails[] = $email;
+            }
+        }
+        
+        // Eliminar duplicados una sola vez al final
+        return array_values(array_unique($valid_emails));
     }
     
     /**
@@ -1589,10 +1721,16 @@ class WEC_Campaign_Manager {
             return false;
         }
         
+        // Inicializar variable query para evitar undefined variable en catch block
+        $query = '';
+        
         try {
-            // Ejecutar inserción masiva
+            // Escapar nombre de tabla para prevenir inyección SQL
+            $safe_table_name = $this->escape_table_name($table_items);
+            
+            // Ejecutar inserción masiva con tabla escapada
             $query = $wpdb->prepare(
-                "INSERT INTO {$table_items} (job_id, email, status, error, attempts) VALUES " . implode(', ', $placeholders),
+                "INSERT INTO {$safe_table_name} (job_id, email, status, error, attempts) VALUES " . implode(', ', $placeholders),
                 ...$values
             );
             
@@ -1606,7 +1744,8 @@ class WEC_Campaign_Manager {
             
         } catch (Exception $e) {
             // Log error detallado para debugging
-            error_log("WEC: Error en bulk insert lote {$batch_num} de {$total_batches}: " . $e->getMessage() . " (Query size: " . number_format(strlen($query) / 1024, 1) . "KB)");
+            $query_size = !empty($query) ? " (Query size: " . number_format(strlen($query) / 1024, 1) . "KB)" : '';
+            error_log("WEC: Error en bulk insert lote {$batch_num} de {$total_batches}: " . $e->getMessage() . $query_size);
             return false;
         }
     }
