@@ -1007,17 +1007,23 @@ class WEC_Campaign_Manager {
         $is_valid = hash_equals($expected_secret, $secret);
         
         // Durante período de gracia, también aceptar secreto viejo con timing-safe comparison
-        // Usar OR lógico para mantener tiempo de ejecución constante independientemente del resultado
+        // NOTA: Ejecutamos ambas comparaciones independientemente del resultado para mantener
+        // tiempo de ejecución constante y evitar timing attacks. El período de gracia permite
+        // una migración gradual sin comprometer completamente la seguridad.
         $legacy_valid = false;
-        if ($this->is_in_migration_grace_period()) {
+        $in_grace_period = $this->is_in_migration_grace_period();
+        
+        if ($in_grace_period) {
             $legacy_valid = hash_equals('curren_email_cron_2024', $secret);
-            if ($legacy_valid) {
-                error_log('WEC MIGRATION: Cron ejecutado con secreto viejo durante período de gracia. Por favor actualiza a la nueva URL.');
-            }
         }
         
-        // Combinar resultados de forma timing-safe
-        $is_valid = $is_valid || $legacy_valid;
+        // Combinar resultados de forma timing-safe - ambas comparaciones se ejecutan siempre
+        $is_valid = $is_valid || ($in_grace_period && $legacy_valid);
+        
+        // Log de migración solo después de completar todas las comparaciones timing-safe
+        if ($in_grace_period && $legacy_valid) {
+            error_log('WEC MIGRATION: Cron ejecutado con secreto viejo durante período de gracia. Por favor actualiza a la nueva URL.');
+        }
         
         if (!$is_valid) {
             http_response_code(403);
