@@ -119,6 +119,10 @@ class WEC_Campaign_Manager {
     /** Constantes para plantillas */
     const EMAIL_TEMPLATE_POST_TYPE = 'wec_email_tpl';
     
+    /** Constantes para límites de rendimiento */
+    const DEFAULT_MAX_EMAILS_PER_MINUTE = 1000;
+    const MIN_EMAILS_PER_MINUTE = 1;
+    
     /**
      * Obtiene la instancia única (Singleton)
      * @return WEC_Campaign_Manager
@@ -147,12 +151,10 @@ class WEC_Campaign_Manager {
             try {
                 $manager = WEC_Template_Manager::get_instance();
                 
-                if ($manager instanceof WEC_Template_Manager_Interface) {
-                    $this->template_manager = $manager;
-                } else {
-                    // Crear adapter para compatibilidad
-                    $this->template_manager = new WEC_Template_Manager_Adapter($manager);
-                }
+                // Siempre usar adapter para garantizar compatibilidad consistente
+                // independientemente de si Template Manager implementa la interfaz o no
+                $this->template_manager = new WEC_Template_Manager_Adapter($manager);
+                
             } catch (Exception $e) {
                 error_log('WEC_Campaign_Manager: Error inicializando Template Manager: ' . $e->getMessage());
             }
@@ -172,32 +174,165 @@ class WEC_Campaign_Manager {
         // Obtener secreto almacenado
         $secret = get_option(self::CRON_SECRET_OPTION);
         
-        // Si no existe o es el viejo secreto débil, generar uno nuevo
-        if (empty($secret) || $secret === 'curren_email_cron_2024') {
-            try {
-                // Generar secreto criptográficamente seguro
-                $secret = wp_generate_password(32, true, true);
-                
-                // Verificar que el secreto generado es válido y tiene la longitud correcta
-                if (strlen($secret) < 32) {
-                    throw new Exception('Generated secret too short');
-                }
-                
-                // Guardar en base de datos
-                update_option(self::CRON_SECRET_OPTION, $secret, false); // autoload = false
-                
-                error_log('WEC: Nuevo secreto de cron generado y almacenado de forma segura');
-                
-            } catch (Exception $e) {
-                // Fallback extremo si wp_generate_password falla
-                $secret = hash('sha256', uniqid(mt_rand(), true) . time() . wp_salt());
-                update_option(self::CRON_SECRET_OPTION, $secret, false);
-                
-                error_log('WEC: Error generando secreto, usando fallback hash: ' . $e->getMessage());
-            }
+        // Migración gradual: mantener compatibilidad con secreto débil por tiempo limitado
+        if (empty($secret)) {
+            // No hay secreto, generar uno nuevo
+            $this->generate_new_cron_secret();
+            return get_option(self::CRON_SECRET_OPTION);
+        } elseif ($secret === 'curren_email_cron_2024') {
+            // Secreto débil detectado - migrar con período de gracia
+            $this->migrate_weak_cron_secret();
+            return get_option(self::CRON_SECRET_OPTION);
         }
         
         return $secret;
+    }
+    
+    /**
+     * Migra el secreto débil con período de gracia para compatibilidad
+     * Mantiene el secreto viejo durante un período mientras notifica la necesidad de actualización
+     */
+    private function migrate_weak_cron_secret() {
+        $migration_key = 'wec_cron_secret_migration_date';
+        $migration_date = get_option($migration_key);
+        $grace_period_days = 30; // 30 días de período de gracia
+        
+        if (!$migration_date) {
+            // Primera vez que detectamos el secreto débil - iniciar migración
+            update_option($migration_key, current_time('mysql'), false);
+            
+            error_log('WEC SECURITY NOTICE: Secreto de cron débil detectado. Iniciando migración con período de gracia de ' . $grace_period_days . ' días.');
+            error_log('WEC: Por favor actualiza tus tareas cron externas con el nuevo secreto antes del ' . date('Y-m-d H:i:s', strtotime('+' . $grace_period_days . ' days')));
+            
+            // Generar nuevo secreto pero mantener el viejo temporalmente
+            $this->generate_new_cron_secret();
+            
+            // En admin, mostrar aviso importante
+            if (is_admin()) {
+                add_action('admin_notices', [$this, 'show_cron_migration_notice']);
+            }
+            
+            return;
+        }
+        
+        // Verificar si el período de gracia ha expirado
+        $migration_timestamp = strtotime($migration_date);
+        $grace_expiry = $migration_timestamp + ($grace_period_days * DAY_IN_SECONDS);
+        
+        if (time() > $grace_expiry) {
+            // Período de gracia expirado - forzar cambio
+            error_log('WEC SECURITY: Período de gracia del secreto de cron expirado. Forzando uso del nuevo secreto.');
+            
+            // El nuevo secreto ya fue generado, solo necesitamos usar get_option
+            $new_secret = get_option(self::CRON_SECRET_OPTION);
+            if ($new_secret && $new_secret !== 'curren_email_cron_2024') {
+                // Todo bien, el secreto ya cambió
+                delete_option($migration_key); // Limpiar datos de migración
+                return;
+            }
+            
+            // Fallback: generar nuevo secreto si algo salió mal
+            $this->generate_new_cron_secret();
+            delete_option($migration_key);
+        } else {
+            // Aún en período de gracia - recordar actualización
+            $days_remaining = ceil(($grace_expiry - time()) / DAY_IN_SECONDS);
+            error_log('WEC: Recordatorio de migración de secreto - ' . $days_remaining . ' días restantes para actualizar cron externo.');
+            
+            if (is_admin()) {
+                add_action('admin_notices', [$this, 'show_cron_migration_notice']);
+            }
+        }
+    }
+    
+    /**
+     * Genera un nuevo secreto criptográficamente seguro
+     */
+    private function generate_new_cron_secret() {
+        try {
+            // Generar secreto criptográficamente seguro
+            $secret = wp_generate_password(32, true, true);
+            
+            // Verificar que el secreto generado es válido y tiene la longitud correcta
+            if (strlen($secret) < 32) {
+                throw new Exception('Generated secret too short');
+            }
+            
+            // Guardar en base de datos
+            update_option(self::CRON_SECRET_OPTION, $secret, false); // autoload = false
+            
+            error_log('WEC: Nuevo secreto de cron generado y almacenado de forma segura (longitud: ' . strlen($secret) . ')');
+            
+        } catch (Exception $e) {
+            // Fallback extremo si wp_generate_password falla
+            $secret = hash('sha256', uniqid(mt_rand(), true) . time() . wp_salt());
+            update_option(self::CRON_SECRET_OPTION, $secret, false);
+            
+            error_log('WEC: Error generando secreto, usando fallback hash: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Muestra aviso de migración de secreto en el admin
+     */
+    public function show_cron_migration_notice() {
+        $migration_date = get_option('wec_cron_secret_migration_date');
+        if (!$migration_date) return;
+        
+        $grace_period_days = 30;
+        $migration_timestamp = strtotime($migration_date);
+        $grace_expiry = $migration_timestamp + ($grace_period_days * DAY_IN_SECONDS);
+        $days_remaining = ceil(($grace_expiry - time()) / DAY_IN_SECONDS);
+        
+        if ($days_remaining > 0) {
+            $new_cron_url = $this->get_external_cron_url();
+            ?>
+            <div class="notice notice-warning is-dismissible">
+                <h3><strong>⚠️ WP Email Collector - Actualización de Seguridad Requerida</strong></h3>
+                <p>
+                    <strong>Se ha detectado un secreto de cron débil.</strong> Por seguridad, se ha generado un nuevo secreto criptográfico.
+                </p>
+                <p>
+                    <strong>Acción requerida:</strong> Actualiza tus tareas cron externas con la nueva URL:
+                </p>
+                <p>
+                    <code style="background: #f0f0f1; padding: 5px; word-break: break-all;"><?php echo esc_html($new_cron_url); ?></code>
+                </p>
+                <p>
+                    <strong>Tiempo restante:</strong> <?php echo intval($days_remaining); ?> días para completar la migración.
+                    Después de este período, el secreto antiguo dejará de funcionar.
+                </p>
+                <p>
+                    <a href="<?php echo esc_url(admin_url('admin.php?page=wec-campaigns')); ?>" class="button button-primary">
+                        Ver Nueva URL de Cron
+                    </a>
+                </p>
+            </div>
+            <?php
+        }
+        
+        return $secret;
+    }
+    
+    /**
+     * Obtiene el límite máximo de emails por minuto
+     * Permite configuración via constante WEC_MAX_EMAILS_PER_MINUTE o filtro
+     * 
+     * @return int Límite máximo de emails por minuto (min: 1, por defecto: 1000)
+     */
+    private function get_max_emails_per_minute() {
+        // 1. Verificar si hay constante definida (configuración de servidor)
+        if (defined('WEC_MAX_EMAILS_PER_MINUTE') && is_numeric(WEC_MAX_EMAILS_PER_MINUTE)) {
+            $limit = max(self::MIN_EMAILS_PER_MINUTE, intval(WEC_MAX_EMAILS_PER_MINUTE));
+        } else {
+            $limit = self::DEFAULT_MAX_EMAILS_PER_MINUTE;
+        }
+        
+        // 2. Permitir filtros de WordPress para personalización avanzada
+        $filtered_limit = apply_filters('wec_max_emails_per_minute', $limit);
+        
+        // 3. Asegurar que el límite filtrado sea válido
+        return max(self::MIN_EMAILS_PER_MINUTE, intval($filtered_limit));
     }
     
     /**
@@ -305,7 +440,17 @@ class WEC_Campaign_Manager {
                 <tr>
                     <th><?php esc_html_e('Lote por minuto', 'wp-email-collector'); ?></th>
                     <td>
-                        <input type="number" name="rate_per_minute" value="<?php echo intval($job_to_edit->rate_per_minute ?: 100); ?>" min="1" step="1">
+                        <input type="number" name="rate_per_minute" value="<?php echo intval($job_to_edit->rate_per_minute ?: 100); ?>" 
+                               min="<?php echo self::MIN_EMAILS_PER_MINUTE; ?>" 
+                               max="<?php echo esc_attr($this->get_max_emails_per_minute()); ?>" 
+                               step="1">
+                        <p class="wec-help">
+                            <?php printf(
+                                __('Número de emails a enviar por minuto (1-%d). Límite actual del servidor: %d emails/minuto', 'wp-email-collector'),
+                                $this->get_max_emails_per_minute(),
+                                $this->get_max_emails_per_minute()
+                            ); ?>
+                        </p>
                     </td>
                 </tr>
             </table>
@@ -373,7 +518,17 @@ class WEC_Campaign_Manager {
                 <tr>
                     <th><?php esc_html_e('Lote por minuto', 'wp-email-collector'); ?></th>
                     <td>
-                        <input type="number" name="rate_per_minute" value="100" min="1" step="1">
+                        <input type="number" name="rate_per_minute" value="100" 
+                               min="<?php echo self::MIN_EMAILS_PER_MINUTE; ?>" 
+                               max="<?php echo esc_attr($this->get_max_emails_per_minute()); ?>" 
+                               step="1">
+                        <p class="wec-help">
+                            <?php printf(
+                                __('Número de emails a enviar por minuto (1-%d). Límite actual del servidor: %d emails/minuto', 'wp-email-collector'),
+                                $this->get_max_emails_per_minute(),
+                                $this->get_max_emails_per_minute()
+                            ); ?>
+                        </p>
                     </td>
                 </tr>
             </table>
@@ -472,7 +627,10 @@ class WEC_Campaign_Manager {
         $mode = sanitize_text_field($_POST['recipients_mode'] ?? 'scan');
         $list_raw = wp_unslash($_POST['recipients_list'] ?? '');
         $start_at = sanitize_text_field($_POST['start_at'] ?? '');
-        $rate_per_min = max(1, min(1000, intval($_POST['rate_per_minute'] ?? 100)));
+        
+        // Validar rate limit con límite configurable para prevenir sobrecarga del servidor
+        $max_rate = $this->get_max_emails_per_minute();
+        $rate_per_min = max(self::MIN_EMAILS_PER_MINUTE, min($max_rate, intval($_POST['rate_per_minute'] ?? 100)));
         
         if (!$tpl_id) {
             wp_die(__('Selecciona una plantilla.', 'wp-email-collector'));
@@ -525,7 +683,10 @@ class WEC_Campaign_Manager {
         
         $tpl_id = intval($_POST['tpl_id'] ?? 0);
         $start_at = sanitize_text_field($_POST['start_at'] ?? '');
-        $rate_per_min = max(1, min(1000, intval($_POST['rate_per_minute'] ?? 100)));
+        
+        // Validar rate limit con límite configurable para prevenir sobrecarga del servidor
+        $max_rate = $this->get_max_emails_per_minute();
+        $rate_per_min = max(self::MIN_EMAILS_PER_MINUTE, min($max_rate, intval($_POST['rate_per_minute'] ?? 100)));
         
         if (!$job_id || !$tpl_id) {
             wp_die(__('Datos incompletos.', 'wp-email-collector'));
@@ -739,13 +900,23 @@ class WEC_Campaign_Manager {
                 'reset_links'   => true
             ]);
             
-            // Activar filtro HTML solo para este email
+            // Activar filtro HTML solo para este email con protección contra excepciones
             add_filter('wp_mail_content_type', [$this, 'set_mail_content_type']);
             
-            $ok = wp_mail($item->email, $subject, $html_personal, $headers);
-            
-            // Remover filtro inmediatamente después del envío
-            remove_filter('wp_mail_content_type', [$this, 'set_mail_content_type']);
+            try {
+                $ok = wp_mail($item->email, $subject, $html_personal, $headers);
+            } catch (Exception $e) {
+                // Log error pero continuar procesamiento
+                error_log("WEC: Error enviando email a {$item->email}: " . $e->getMessage());
+                $ok = false;
+            } catch (Throwable $e) {
+                // Capturar errores fatales de PHP 7+
+                error_log("WEC: Error fatal enviando email a {$item->email}: " . $e->getMessage());
+                $ok = false;
+            } finally {
+                // SIEMPRE remover el filtro sin importar qué pase
+                remove_filter('wp_mail_content_type', [$this, 'set_mail_content_type']);
+            }
             
             if ($ok) {
                 $this->mark_item_sent($item->id, $item->attempts);
@@ -789,7 +960,27 @@ class WEC_Campaign_Manager {
         $secret = sanitize_text_field($_GET['secret'] ?? '');
         $expected_secret = $this->get_or_create_cron_secret();
         
-        if (!hash_equals($expected_secret, $secret)) {
+        // Validar que el secreto no esté vacío y sea una cadena válida antes de comparar
+        if (empty($secret) || !is_string($secret)) {
+            http_response_code(403);
+            header('Content-Type: text/plain; charset=UTF-8');
+            echo "ERROR 403: Clave secreta incorrecta\n";
+            echo "Usa: ?wec_cron=true&secret=tu_clave_secreta\n";
+            exit;
+        }
+        
+        // Verificar secreto actual
+        $is_valid = hash_equals($expected_secret, $secret);
+        
+        // Durante período de gracia, también aceptar secreto viejo
+        if (!$is_valid && $this->is_in_migration_grace_period()) {
+            $is_valid = hash_equals('curren_email_cron_2024', $secret);
+            if ($is_valid) {
+                error_log('WEC MIGRATION: Cron ejecutado con secreto viejo durante período de gracia. Por favor actualiza a la nueva URL.');
+            }
+        }
+        
+        if (!$is_valid) {
             http_response_code(403);
             header('Content-Type: text/plain; charset=UTF-8');
             echo "ERROR 403: Clave secreta incorrecta\n";
@@ -835,6 +1026,23 @@ class WEC_Campaign_Manager {
         }
         
         exit;
+    }
+    
+    /**
+     * Verifica si estamos en período de gracia de migración de secreto
+     * @return bool True si aún estamos en el período de gracia
+     */
+    private function is_in_migration_grace_period() {
+        $migration_date = get_option('wec_cron_secret_migration_date');
+        if (!$migration_date) {
+            return false; // No hay migración en curso
+        }
+        
+        $grace_period_days = 30;
+        $migration_timestamp = strtotime($migration_date);
+        $grace_expiry = $migration_timestamp + ($grace_period_days * DAY_IN_SECONDS);
+        
+        return time() <= $grace_expiry;
     }
     
     /**
@@ -1275,6 +1483,7 @@ class WEC_Campaign_Manager {
     /**
      * Inserta emails en lotes para mejor rendimiento
      * Utiliza bulk insert para evitar el problema N+1 con listas grandes de destinatarios
+     * Incluye protección contra límites de max_allowed_packet de MySQL
      * 
      * @param int $job_id ID del trabajo/campaña
      * @param array $emails Lista de emails a insertar
@@ -1288,8 +1497,17 @@ class WEC_Campaign_Manager {
         global $wpdb;
         $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
         
-        // Procesar en lotes de 500 para evitar problemas de memoria y límites MySQL
+        // Procesar en lotes adaptativos para evitar límites de MySQL
         $batch_size = 500;
+        $max_query_size = 1048576; // 1MB por defecto (muy conservador)
+        
+        // Intentar detectar max_allowed_packet de MySQL
+        $mysql_limit = $wpdb->get_var("SELECT @@max_allowed_packet");
+        if ($mysql_limit && is_numeric($mysql_limit)) {
+            // Usar 50% del límite real para margen de seguridad
+            $max_query_size = intval($mysql_limit * 0.5);
+        }
+        
         $total_batches = ceil(count($emails) / $batch_size);
         $success_count = 0;
         
@@ -1301,15 +1519,31 @@ class WEC_Campaign_Manager {
                 continue;
             }
             
-            // Construir query de inserción masiva
+            // Construir query de inserción masiva con verificación de tamaño
             $values = [];
             $placeholders = [];
+            $estimated_size = 200; // Tamaño base de la query (INSERT INTO...)
             
             foreach ($batch_emails as $email) {
                 // Validar y sanitizar cada email
                 $email = strtolower(trim($email));
                 if (!is_email($email) || strlen($email) > 254) { // RFC 5321 limit
                     continue;
+                }
+                
+                // Estimar tamaño de este registro en la query
+                $record_size = strlen($email) + 50; // email + placeholders + separadores
+                
+                // Verificar si agregar este registro excedería el límite
+                if ($estimated_size + $record_size > $max_query_size && !empty($placeholders)) {
+                    // Ejecutar query parcial y reiniciar arrays
+                    $this->execute_bulk_insert_batch($table_items, $values, $placeholders, $batch + 1, $total_batches);
+                    $success_count += count($placeholders);
+                    
+                    // Reiniciar para nuevo sub-lote
+                    $values = [];
+                    $placeholders = [];
+                    $estimated_size = 200;
                 }
                 
                 $values[] = $job_id;           // %d
@@ -1319,13 +1553,44 @@ class WEC_Campaign_Manager {
                 $values[] = 0;                 // %d (attempts)
                 
                 $placeholders[] = '(%d, %s, %s, %s, %d)';
+                $estimated_size += $record_size;
             }
             
-            if (empty($placeholders)) {
-                continue;
+            // Ejecutar el lote restante si hay datos
+            if (!empty($placeholders)) {
+                $this->execute_bulk_insert_batch($table_items, $values, $placeholders, $batch + 1, $total_batches);
+                $success_count += count($placeholders);
             }
-            
-            // Ejecutar inserción masiva para este lote
+        }
+        
+        // Log estadísticas para monitoreo
+        if ($success_count > 0) {
+            error_log("WEC: Bulk insert completado - {$success_count} emails insertados para job {$job_id} (límite query: " . number_format($max_query_size / 1024) . "KB)");
+        }
+        
+        return $success_count > 0;
+    }
+    
+    /**
+     * Ejecuta un lote individual de inserción masiva
+     * Método auxiliar para bulk_insert_email_items() que maneja la ejecución real
+     * 
+     * @param string $table_items Nombre de la tabla
+     * @param array $values Valores para prepared statement
+     * @param array $placeholders Placeholders de la query
+     * @param int $batch_num Número de lote para logging
+     * @param int $total_batches Total de lotes para logging
+     * @return bool True si la inserción fue exitosa
+     */
+    private function execute_bulk_insert_batch($table_items, $values, $placeholders, $batch_num, $total_batches) {
+        global $wpdb;
+        
+        if (empty($placeholders)) {
+            return false;
+        }
+        
+        try {
+            // Ejecutar inserción masiva
             $query = $wpdb->prepare(
                 "INSERT INTO {$table_items} (job_id, email, status, error, attempts) VALUES " . implode(', ', $placeholders),
                 ...$values
@@ -1333,20 +1598,17 @@ class WEC_Campaign_Manager {
             
             $result = $wpdb->query($query);
             
-            if ($result !== false) {
-                $success_count += count($placeholders);
-            } else {
-                // Log error para debugging pero continúa con otros lotes
-                error_log("WEC: Error en bulk insert lote " . ($batch + 1) . " de " . $total_batches . ": " . $wpdb->last_error);
+            if ($result === false) {
+                throw new Exception("MySQL error: " . $wpdb->last_error);
             }
+            
+            return true;
+            
+        } catch (Exception $e) {
+            // Log error detallado para debugging
+            error_log("WEC: Error en bulk insert lote {$batch_num} de {$total_batches}: " . $e->getMessage() . " (Query size: " . number_format(strlen($query) / 1024, 1) . "KB)");
+            return false;
         }
-        
-        // Log estadísticas para monitoreo
-        if ($success_count > 0) {
-            error_log("WEC: Bulk insert completado - {$success_count} emails insertados en {$total_batches} lotes para job {$job_id}");
-        }
-        
-        return $success_count > 0;
     }
     
     /**
