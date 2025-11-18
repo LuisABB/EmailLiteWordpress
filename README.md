@@ -6,6 +6,36 @@
 
 ---
 
+## Arquitectura del Plugin (v7.0+)
+
+El plugin está organizado en **managers especializados** para máxima mantenibilidad:
+
+### 📧 **WEC_Campaign_Manager**
+- Gestión completa de campañas
+- Procesamiento de cola y envíos masivos
+- Cron interno y externo
+- Estados de campaña y monitoreo
+
+### 📤 **WEC_SMTP_Manager**
+- Configuración SMTP avanzada
+- Soporte para archivos `.env`
+- Envío de emails de prueba
+- Fallbacks robustos
+
+### 📄 **WEC_Template_Manager**
+- Custom Post Type para plantillas
+- Vista previa responsive
+- Sistema de variables dinámicas
+- Validación de contenido
+
+### 🔧 **WEC_Email_Collector** (Core)
+- Orquestación de managers
+- Autoloader de clases
+- Hooks principales de WordPress
+- Configuración global
+
+---
+
 ## Características principales
 
 - **Email Templates** (`wec_email_tpl`) para diseñar HTML personalizados.

@@ -2,6 +2,48 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
+## [7.0.0] - 2025-11-16 - Refactorización Campaign Manager
+
+### 🔄 Arquitectura de Campañas
+- **Separación completa**: Nueva clase `WEC_Campaign_Manager` independiente para gestión de campañas
+- **Autoloader compatible**: Carga automática del manager de campañas sin cambios en estructura existente
+- **Patrón arquitectónico consistente**: Siguiendo el mismo diseño de SMTP y Template managers
+- **Interfaces desacopladas**: Sistema de interfaces para comunicación entre managers
+
+### 🎯 Funcionalidades Migradas
+- **Creación y edición** de campañas completa
+- **Procesamiento de cola** y envíos masivos
+- **Gestión de destinatarios** (escaneo + manual)
+- **Cron interno y externo** con validación de seguridad
+- **Estados de campaña** (pending, running, done, expired)
+- **Zona horaria CDMX** con conversión UTC automática
+
+### ⚡ Beneficios Técnicos
+- **Mantenibilidad**: Archivo principal reducido de ~2,150 a ~1,400 líneas
+- **Responsabilidades claras**: Campaign Manager enfocado exclusivamente en campañas
+- **Extensibilidad**: Base para futuras funcionalidades de campañas avanzadas
+- **Testabilidad**: Componentes aislados más fáciles de probar
+
+### 🛠️ Funcionalidades Específicas
+- **Interfaz unificada**: UI consistente con otros managers del sistema
+- **Validación robusta**: Sistema completo de validación de plantillas y datos
+- **Fallback systems**: Sistemas de respaldo para compatibilidad con versiones anteriores
+- **Debug avanzado**: Logs detallados y endpoint de monitoreo mejorado
+
+### 🔐 Seguridad Mejorada
+- **Interfaces tipadas**: Validación estricta de tipos entre componentes
+- **Wrapper patterns**: Adaptadores seguros para compatibilidad hacia atrás
+- **Cron endpoint discreto**: Respuestas mínimas en producción para evitar exposición de métricas internas
+- **Filtros scoped**: wp_mail_content_type solo activo durante envío de campañas específicas
+- **Sanitización completa**: Validación de todos los inputs de campañas
+- **Token management**: Sistema seguro para cron externo y unsubscribe
+
+### 📦 Compatibilidad
+- **100% retrocompatible**: Mismas opciones BD, hooks y estructura .env
+- **API consistency**: Métodos públicos mantienen misma signatura
+- **Plugin upgrade**: Actualización transparente sin pérdida de datos
+- **Manager integration**: Comunicación fluida entre todos los managers
+
 ## [6.0.0] - 2025-11-13 - Refactorización SMTP
 
 ### 🔄 Arquitectura SMTP

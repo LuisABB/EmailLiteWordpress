@@ -36,14 +36,11 @@ final class WEC_Email_Collector {
     const AJAX_NONCE                 = 'wec_preview_nonce';
     const ADMIN_POST_PREVIEW_IFRAME  = 'wec_preview_iframe';
     const AJAX_ACTION_IFRAME         = 'wec_preview_iframe_html';
-
-    const CRON_HOOK                  = 'wec_process_queue';
+    
+    /*** Database Table Constants ***/
     const DB_TABLE_JOBS              = 'wec_jobs';
     const DB_TABLE_ITEMS             = 'wec_job_items';
     const DB_TABLE_SUBSCRIBERS       = 'wec_subscribers';
-    const ADMIN_POST_CAMPAIGN_CREATE = 'wec_create_campaign';
-    const ADMIN_POST_CAMPAIGN_UPDATE = 'wec_update_campaign';
-    const ADMIN_POST_CAMPAIGN_DELETE = 'wec_delete_campaign';
 
     /*** Bootstrap ***/
     public function __construct() {
@@ -61,21 +58,13 @@ final class WEC_Email_Collector {
         // Inicializar SMTP Manager
         add_action( 'init', [ $this, 'init_smtp_manager' ], 5 );
 
+        // Inicializar Campaign Manager
+        add_action( 'init', [ $this, 'init_campaign_manager' ], 5 );
+
         // AJAX/Preview
         add_action( 'wp_ajax_'  . self::AJAX_ACTION_PREV,   [ $this, 'ajax_preview_template' ] );
         add_action( 'admin_post_' . self::ADMIN_POST_PREVIEW_IFRAME, [ $this, 'handle_preview_iframe' ] );
         add_action( 'wp_ajax_'  . self::AJAX_ACTION_IFRAME, [ $this, 'ajax_preview_iframe_html' ] );
-
-        // Agregar handlers para admin-post (excepto SMTP que maneja su propio manager)
-        add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_CREATE,  [ $this, 'handle_create_campaign' ] );
-        add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_UPDATE,  [ $this, 'handle_update_campaign' ] );
-        add_action( 'admin_post_' . self::ADMIN_POST_CAMPAIGN_DELETE,  [ $this, 'handle_delete_campaign' ] );
-        add_action( 'admin_post_wec_force_cron',                      [ $this, 'handle_force_cron' ] );
-
-        // Cron
-        add_action( self::CRON_HOOK, [ $this, 'process_queue_cron' ] );
-        add_action( 'wp', [ $this, 'setup_recurring_cron' ] ); // Cron persistente cada minuto
-        add_action( 'init', [ $this, 'handle_external_cron' ] ); // Endpoint para cron externo
 
         // Upgrades and migrations only
         add_action( 'admin_init', [ $this, 'maybe_migrate_once' ] );
@@ -111,6 +100,13 @@ final class WEC_Email_Collector {
      */
     public function init_smtp_manager() {
         WEC_SMTP_Manager::get_instance();
+    }
+
+    /**
+     * Inicializa el gestor de campañas
+     */
+    public function init_campaign_manager() {
+        WEC_Campaign_Manager::get_instance();
     }
 
     /**
@@ -224,15 +220,20 @@ final class WEC_Email_Collector {
         $is_wec_page = in_array($hook, [
             'toplevel_page_' . self::ROOT_MENU_SLUG,
             'email-manager_page_wec-campaigns',
+            'toplevel_page_wec-campaigns',  // Added: main campaigns page
             'email-manager_page_wec-smtp'
         ]);
+        
+        // Force load for any page containing 'wec' or 'campaigns'
+        $is_wec_related = (strpos($hook, 'wec') !== false || strpos($hook, 'campaigns') !== false);
+        
         $is_tpl_list = ( $hook === 'edit.php' && ( $_GET['post_type'] ?? '' ) === self::CPT_TPL );
         $is_tpl_edit = (
             ( $hook === 'post.php'     && get_post_type( intval($_GET['post'] ?? 0) ) === self::CPT_TPL ) ||
             ( $hook === 'post-new.php' && ( $_GET['post_type'] ?? '' ) === self::CPT_TPL )
         );
         
-        if ( ! ( $is_wec || $is_wec_page || $is_tpl_list || $is_tpl_edit ) ) return;
+        if ( ! ( $is_wec || $is_wec_page || $is_wec_related || $is_tpl_list || $is_tpl_edit ) ) return;
 
         add_thickbox();
         wp_register_script( 'wec-admin', false, [ 'jquery','thickbox' ], '3.0.0', true );
@@ -288,11 +289,9 @@ jQuery(function($){
 
   $(document).on('click','.wec-btn-preview, #wec-btn-preview',function(e){
     e.preventDefault();
-    console.log('Preview button clicked');
     
     if (typeof WEC_AJAX === 'undefined') { 
       alert('No se pudo iniciar vista previa - WEC_AJAX no definido'); 
-      console.error('WEC_AJAX not defined'); 
       return; 
     }
     
@@ -311,7 +310,6 @@ jQuery(function($){
     }
     
     var tplId = $templateSelect.val();
-    console.log('Template ID:', tplId, 'from selector:', $templateSelect.attr('id'));
     
     if(!tplId){ 
       alert('Selecciona una plantilla.'); 
@@ -325,31 +323,38 @@ jQuery(function($){
 
     var $f = $('#wec-preview-iframe');
     var di = $f[0].contentDocument || $f[0].contentWindow.document;
-    if (di) { di.open(); di.write('<!doctype html><html><body style="font-family:sans-serif;padding:24px;color:#6b7280">Cargando...</body></html>'); di.close(); }
+    if (di) { di.open(); di.write('<!doctype html><html><body style="font-family:sans-serif;padding:24px;color:#6b7280">Cargando vista previa...</body></html>'); di.close(); }
 
     var url = WEC_AJAX.ajax_url
             + '?action=' + encodeURIComponent(WEC_AJAX.iframe_action)
             + '&wec_nonce=' + encodeURIComponent(WEC_AJAX.preview_nonce)
             + '&tpl_id=' + encodeURIComponent(tplId);
-    
-    console.log('Preview URL:', url);
 
     $.get(url).done(function(html){
-        console.log('Preview HTML received, length:', html.length);
-        console.log('HTML contains "Comprar":', html.indexOf('Comprar') !== -1);
+        // Actualizar el asunto si está en el HTML
+        if (html.indexOf('<title>') !== -1) {
+            var titleMatch = html.match(/<title>(.*?)<\/title>/);
+            if (titleMatch && titleMatch[1]) {
+                $('#wec-preview-subject').text('Vista previa: ' + titleMatch[1]);
+            }
+        }
         
         var d = $f[0].contentDocument || $f[0].contentWindow.document;
         try{ d.open(); d.write(html); d.close(); }catch(err){
-          console.error('Error writing to iframe:', err);
           var blob = new Blob([html], {type: 'text/html'});
           $f.attr('src', URL.createObjectURL(blob));
         }
     }).fail(function(xhr){
-        console.error('Preview failed:', xhr);
         var d = $f[0].contentDocument || $f[0].contentWindow.document;
-        var msg = 'Error de vista previa ('+xhr.status+'): '+(xhr.responseText||'');
-        if (d) { d.open(); d.write('<pre style="font-family:monospace;padding:16px;white-space:pre-wrap;">'+msg+'</pre>'); d.close(); }
+        var msg = 'Error de vista previa ('+xhr.status+'): '+(xhr.responseText||'No se pudo cargar el contenido');
+        if (d) { d.open(); d.write('<div style="font-family:Arial;padding:40px;text-align:center;"><h3 style="color:#e74c3c;">Error en la vista previa</h3><p>'+msg+'</p><button onclick="tb_remove();" style="background:#007cba;color:white;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;">Cerrar</button></div>'); d.close(); }
     });
+  });
+  
+  // Manejar botones de cambio de tamaño
+  $(document).on('click', '[data-wec-size]', function(e){
+    e.preventDefault();
+    setFrameWidth($(this).data('wec-size'));
   });
 });
 JS;
@@ -370,415 +375,9 @@ JS;
     }
 
     public function render_campaigns_page(){
-        if( ! current_user_can('manage_options') ) return;
-        global $wpdb;
-        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $jobs = $wpdb->get_results( "SELECT * FROM {$table_jobs} ORDER BY id DESC LIMIT 100" );
-        $templates = get_posts([ 'post_type'=> self::CPT_TPL, 'numberposts'=> -1, 'post_status'=> ['publish','draft'] ]);
-
-        $edit_job = isset($_GET['edit_job']) ? intval($_GET['edit_job']) : 0;
-        $job_to_edit = null;
-        if($edit_job){
-            $job_to_edit = $wpdb->get_row( $wpdb->prepare("SELECT * FROM {$table_jobs} WHERE id=%d", $edit_job) );
-        }
-        ?>
-        <div class="wrap">
-          <h1>Campañas</h1>
-          
-          <p>
-              <a href="<?php echo admin_url('admin-post.php?action=wec_force_cron&_wpnonce=' . wp_create_nonce('wec_force_cron')); ?>" class="button">Procesar Cola Manualmente</a>
-              <a href="<?php echo home_url('/?wec_cron=true&secret=' . (defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : 'curren_email_cron_2024')); ?>" class="button button-primary" target="_blank">🔗 Probar Cron Externo</a>
-          </p>
-          
-          <?php if($job_to_edit): ?>
-          <h2>Editar campaña #<?php echo intval($job_to_edit->id); ?></h2>
-          <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>">
-            <input type="hidden" name="action" value="<?php echo esc_attr(self::ADMIN_POST_CAMPAIGN_UPDATE); ?>">
-            <input type="hidden" name="job_id" value="<?php echo intval($job_to_edit->id); ?>">
-            <?php wp_nonce_field( 'wec_campaign_update_'.$job_to_edit->id ); ?>
-            <table class="form-table">
-              <tr>
-                <th>Plantilla</th>
-                <td class="wec-inline">
-                  <select name="tpl_id" id="wec_template_id_edit">
-                    <?php foreach($templates as $tpl): ?>
-                    <option value="<?php echo esc_attr($tpl->ID); ?>" <?php selected($tpl->ID, $job_to_edit->tpl_id); ?>><?php echo esc_html($tpl->post_title); ?></option>
-                    <?php endforeach; ?>
-                  </select>
-                  <button id="wec-btn-preview-edit" type="button" class="button wec-btn-preview" data-target="#wec_template_id_edit">Vista previa</button>
-                </td>
-              </tr>
-              <tr>
-                <th>Inicio</th>
-                <td><input type="datetime-local" name="start_at" value="<?php echo esc_attr( $this->convert_mysql_to_local($job_to_edit->start_at) ); ?>">
-                  <p class="wec-help">Déjalo vacío para empezar de inmediato. <strong>Hora de Ciudad de México (CDMX)</strong></p>
-                </td>
-              </tr>
-              <tr>
-                <th>Lote por minuto</th>
-                <td><input type="number" name="rate_per_minute" value="<?php echo intval($job_to_edit->rate_per_minute ?: 100); ?>" min="1" step="1"></td>
-              </tr>
-            </table>
-            <p><button class="button button-primary">Guardar cambios</button></p>
-          </form>
-          <hr/>
-          <?php endif; ?>
-
-          <h2>Crear campaña</h2>
-          <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>">
-            <input type="hidden" name="action" value="<?php echo esc_attr(self::ADMIN_POST_CAMPAIGN_CREATE); ?>">
-            <?php wp_nonce_field( 'wec_campaign_create' ); ?>
-            <table class="form-table">
-              <tr>
-                <th>Plantilla</th>
-                <td class="wec-inline">
-                  <select name="tpl_id" id="wec_template_id_create">
-                    <?php foreach($templates as $tpl): ?>
-                    <option value="<?php echo esc_attr($tpl->ID); ?>"><?php echo esc_html($tpl->post_title); ?></option>
-                    <?php endforeach; ?>
-                  </select>
-                  <button id="wec-btn-preview-create" type="button" class="button wec-btn-preview" data-target="#wec_template_id_create">Vista previa</button>
-                </td>
-              </tr>
-              <tr>
-                <th>Destinatarios</th>
-                <td>
-                  <label><input type="radio" name="recipients_mode" value="scan" checked> Usar escaneo de todo el sitio</label><br>
-                  <label><input type="radio" name="recipients_mode" value="paste"> Pegar correos (uno por línea)</label><br>
-                  <textarea name="recipients_list" rows="6" cols="80" placeholder="correo1@ejemplo.com&#10;correo2@ejemplo.com" style="width:100%;max-width:700px;"></textarea>
-                </td>
-              </tr>
-              <tr>
-                <th>Inicio</th>
-                <td>
-                  <input type="datetime-local" name="start_at">
-                  <p class="wec-help">Déjalo vacío para empezar de inmediato. <strong>Hora de Ciudad de México (CDMX)</strong></p>
-                  <p class="wec-help" style="color:#0073aa;"><strong>💡 Tip:</strong> El sistema ajustará automáticamente tu hora local a la zona horaria del servidor.</p>
-                </td>
-              </tr>
-              <tr>
-                <th>Lote por minuto</th>
-                <td><input type="number" name="rate_per_minute" value="100" min="1" step="1"></td>
-              </tr>
-            </table>
-            <p><button class="button button-primary">Crear campaña</button></p>
-          </form>
-
-          <h2>Campañas recientes</h2>
-          <table class="wec-table">
-            <thead><tr>
-              <th>ID</th><th>Estado</th><th>Plantilla</th><th>Inicio</th><th>Total</th><th>Enviados</th><th>Fallidos</th><th>Acciones</th>
-            </tr></thead>
-            <tbody>
-            <?php if($jobs): foreach($jobs as $job): ?>
-              <tr>
-                <td>#<?php echo intval($job->id); ?></td>
-                <td>
-                  <?php 
-                  $status_label = $job->status;
-                  $status_class = '';
-                  switch($job->status) {
-                    case 'pending': $status_label = '⏳ Pendiente'; $status_class = 'status-pending'; break;
-                    case 'running': $status_label = '▶️ Ejecutando'; $status_class = 'status-running'; break;
-                    case 'done': $status_label = '✅ Completada'; $status_class = 'status-done'; break;
-                    case 'expired': $status_label = '⚠️ Expirada'; $status_class = 'status-expired'; break;
-                    default: $status_label = esc_html($job->status); break;
-                  }
-                  ?>
-                  <span class="<?php echo esc_attr($status_class); ?>"><?php echo $status_label; ?></span>
-                </td>
-                <td><?php echo esc_html(get_the_title($job->tpl_id)); ?></td>
-                <td><?php echo esc_html($this->format_display_datetime($job->start_at)); ?></td>
-                <td><?php echo intval($job->total); ?></td>
-                <td><?php echo intval($job->sent); ?></td>
-                <td><?php echo intval($job->failed); ?></td>
-                <td class="wec-inline">
-                  <a class="button" href="<?php echo esc_url( admin_url('admin.php?page=wec-campaigns&edit_job='.$job->id) ); ?>">Editar</a>
-                  <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline">
-                    <input type="hidden" name="action" value="<?php echo esc_attr(self::ADMIN_POST_CAMPAIGN_DELETE); ?>">
-                    <input type="hidden" name="job_id" value="<?php echo intval($job->id); ?>"/>
-                    <?php wp_nonce_field( 'wec_campaign_delete_'.$job->id ); ?>
-                    <button class="button-link-delete" onclick="return confirm('¿Eliminar campaña #<?php echo intval($job->id); ?>?')">Eliminar</button>
-                  </form>
-                </td>
-              </tr>
-            <?php endforeach; else: ?>
-              <tr><td colspan="8">No hay campañas.</td></tr>
-            <?php endif; ?>
-            </tbody>
-          </table>
-        </div>
-        <?php
-        // Agregar el modal de vista previa para las campañas
-        echo $this->render_preview_modal_html();
-    }
-
-    /*** Campaign Handlers ***/
-    public function handle_create_campaign(){
-        if( ! current_user_can('manage_options') ) wp_die('No autorizado.');
-        check_admin_referer( 'wec_campaign_create' );
-        $tpl_id = intval($_POST['tpl_id'] ?? 0);
-        $mode   = sanitize_text_field($_POST['recipients_mode'] ?? 'scan');
-        $list_raw = wp_unslash($_POST['recipients_list'] ?? '');
-        $start_at = sanitize_text_field($_POST['start_at'] ?? '');
-        $rate_per_min = max(1, intval($_POST['rate_per_minute'] ?? 100));
-
-        if(!$tpl_id) wp_die('Selecciona una plantilla.');
-
-        // Construir lista de destinatarios
-        $emails = ($mode === 'paste' && trim($list_raw) !== '') ? $this->parse_pasted_emails($list_raw) : $this->gather_emails_full_scan();
-
-        // Excluir desuscritos
-        $emails = $this->filter_unsubscribed($emails);
-
-        global $wpdb;
-        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
-
-        // start_at: si viene vacío, ahora mismo. Si viene con valor, convertir de CDMX a UTC
-        $start_value = $start_at ? $this->convert_local_to_mysql($start_at) : current_time('mysql');
-
-        $wpdb->insert($table_jobs,[
-            'tpl_id'   => $tpl_id,
-            'status'   => 'pending',
-            'start_at' => $start_value,
-            'total'    => count($emails),
-            'sent'     => 0,
-            'failed'   => 0,
-            'created_at'=> current_time('mysql'),
-            'rate_per_minute' => $rate_per_min,
-        ], ['%d','%s','%s','%d','%d','%d','%s','%d']);
-        $job_id = $wpdb->insert_id;
-
-        foreach($emails as $e){
-            $wpdb->insert($table_items,[
-                'job_id' => $job_id,
-                'email'  => $e,
-                'status' => 'queued',
-                'error'  => '',
-                'attempts'=> 0,
-            ], ['%d','%s','%s','%s','%d']);
-        }
-
-        // MEJORA: Programar múltiples crons para asegurar ejecución
-        $start_time = $start_at ? strtotime($start_value) : time();
-        
-        // Programar cron principal
-        if( ! wp_next_scheduled( self::CRON_HOOK ) ){
-            wp_schedule_single_event( $start_time + 30, self::CRON_HOOK );
-        }
-        
-        // Programar crons de respaldo cada 2 minutos durante los próximos 10 minutos
-        for($i = 1; $i <= 5; $i++) {
-            wp_schedule_single_event( $start_time + (120 * $i), self::CRON_HOOK );
-        }
-
-        wp_redirect( admin_url('admin.php?page=wec-campaigns') );
-        exit;
-    }
-
-    public function handle_update_campaign(){
-        if( ! current_user_can('manage_options') ) wp_die('No autorizado.');
-        $job_id = intval($_POST['job_id'] ?? 0);
-        check_admin_referer( 'wec_campaign_update_'.$job_id );
-        $tpl_id = intval($_POST['tpl_id'] ?? 0);
-        $start_at = sanitize_text_field($_POST['start_at'] ?? '');
-        $rate_per_min = max(1, intval($_POST['rate_per_minute'] ?? 100));
-
-        if(!$job_id || !$tpl_id) wp_die('Datos incompletos.');
-
-        global $wpdb;
-        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $data = [ 'tpl_id'=>$tpl_id, 'rate_per_minute'=>$rate_per_min ];
-        $fmt  = [ '%d','%d' ];
-        if($start_at !== ''){ 
-            // Convertir fecha de CDMX a UTC para almacenar
-            $data['start_at'] = $this->convert_local_to_mysql($start_at); 
-            $fmt[] = '%s'; 
-        }
-        $wpdb->update($table_jobs, $data, ['id'=>$job_id], $fmt, ['%d']);
-
-        wp_safe_redirect( admin_url('admin.php?page=wec-campaigns') );
-        exit;
-    }
-
-    public function handle_delete_campaign(){
-        if( ! current_user_can('manage_options') ) wp_die('No autorizado.');
-        $job_id = intval($_POST['job_id'] ?? 0);
-        check_admin_referer( 'wec_campaign_delete_'.$job_id );
-        global $wpdb;
-        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
-        $wpdb->delete( $table_jobs, ['id'=>$job_id], ['%d'] );
-        $wpdb->delete( $table_items, ['job_id'=>$job_id], ['%d'] );
-        wp_safe_redirect( admin_url('admin.php?page=wec-campaigns') );
-        exit;
-    }
-
-    public function handle_force_cron(){
-        if( ! current_user_can('manage_options') ) wp_die('No autorizado.');
-        check_admin_referer( 'wec_force_cron' );
-        
-        // Ejecutar el procesamiento directamente
-        $this->process_queue_cron();
-        
-        wp_redirect( admin_url('admin.php?page=wec-campaigns') );
-        exit;
-    }
-
-    /*** Cron: procesar cola ***/
-    /**
-     * Estados de campaña:
-     * - pending: Programada pero no iniciada
-     * - running: En ejecución
-     * - done: Completada exitosamente  
-     * - expired: Venció sin ejecutarse (más de 24h después de la fecha programada)
-     */
-    public function process_queue_cron(){
-        global $wpdb;
-        $table_jobs  = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
-
-        // PASO 1: Marcar como expiradas las campañas pendientes de días anteriores
-        // Esto evita que se ejecuten campañas de días pasados
-        $yesterday_end_cdmx = date('Y-m-d 23:59:59', strtotime('-1 day'));
-        $yesterday_end_utc = $this->convert_local_to_mysql($yesterday_end_cdmx);
-        
-        $expired_count = $wpdb->query( $wpdb->prepare(
-            "UPDATE {$table_jobs} 
-             SET status = 'expired' 
-             WHERE status = 'pending' 
-             AND start_at <= %s", 
-             $yesterday_end_utc
-        ) );
-        
-        // Log si se marcaron campañas como expiradas
-        if ($expired_count > 0) {
-            error_log("WEC: Se marcaron {$expired_count} campañas como expiradas (de días anteriores)");
-        }
-
-        // LIMPIEZA: Eliminar campañas expiradas muy antiguas (más de 30 días)
-        // Esto mantiene la BD limpia pero conserva historial reciente
-        $cleanup_date = date('Y-m-d 23:59:59', strtotime('-30 days'));
-        $cleanup_date_utc = $this->convert_local_to_mysql($cleanup_date);
-        
-        $cleanup_count = $wpdb->query( $wpdb->prepare(
-            "DELETE j, i FROM {$table_jobs} j 
-             LEFT JOIN {$table_items} i ON j.id = i.job_id 
-             WHERE j.status = 'expired' 
-             AND j.start_at <= %s", 
-             $cleanup_date_utc
-        ) );
-        
-        if ($cleanup_count > 0) {
-            error_log("WEC: Se eliminaron {$cleanup_count} campañas expiradas antiguas (>30 días)");
-        }
-
-        // PASO 2: Obtener campaña pendiente cuya hora haya llegado HOY específicamente
-        $current_time_utc = $this->get_current_time_cdmx();
-        
-        // Convertir el inicio y fin del día actual de CDMX a UTC
-        $today_start_cdmx = date('Y-m-d 00:00:00');
-        $today_end_cdmx = date('Y-m-d 23:59:59');
-        $today_start_utc = $this->convert_local_to_mysql($today_start_cdmx);
-        $today_end_utc = $this->convert_local_to_mysql($today_end_cdmx);
-        
-        $job = $wpdb->get_row( $wpdb->prepare(
-            "SELECT * FROM {$table_jobs} 
-             WHERE status IN('pending','running') 
-             AND start_at <= %s 
-             AND start_at >= %s 
-             AND start_at <= %s
-             ORDER BY id ASC LIMIT 1", 
-             $current_time_utc, 
-             $today_start_utc,
-             $today_end_utc
-        ) );
-        
-        if( ! $job ) {
-            return;
-        }
-
-        if( $job->status === 'pending' ){
-            $wpdb->update($table_jobs, ['status'=>'running'], ['id'=>$job->id], ['%s'], ['%d']);
-        }
-
-        $limit = max(1, intval($job->rate_per_minute ?: 100));
-
-        // Procesar por lote
-        $batch = $wpdb->get_results( $wpdb->prepare("SELECT * FROM {$table_items} WHERE job_id=%d AND status='queued' LIMIT %d", $job->id, $limit) );
-        if( ! $batch ){
-            // Sin pendientes -> finalizar
-            $wpdb->update($table_jobs, ['status'=>'done'], ['id'=>$job->id], ['%s'], ['%d']);
-            return;
-        }
-
-        // Render de plantilla una sola vez
-        $template_result = $this->render_template_content( $job->tpl_id );
-        if (is_wp_error($template_result)) {
-            // Error en la plantilla - marcar job como fallido
-            $wpdb->update($table_jobs, ['status'=>'failed'], ['id'=>$job->id], ['%s'], ['%d']);
-            error_log("WEC: Error al renderizar plantilla {$job->tpl_id} para job {$job->id}: " . $template_result->get_error_message());
-            return;
-        }
-        
-        list($subject, $html_raw) = $template_result;
-
-        $headers = [ 'Content-Type: text/html; charset=UTF-8' ];
-        $sent = 0; $failed = 0;
-        foreach($batch as $item){
-            if ( $this->is_unsubscribed($item->email) ) {
-                $wpdb->update($table_items, ['status'=>'failed','attempts'=>$item->attempts+1,'error'=>'unsubscribed'], ['id'=>$item->id], ['%s','%d','%s'], ['%d']);
-                $failed++;
-                continue;
-            }
-            
-            // Generar HTML personalizado para cada destinatario (incluyendo UNSUB_URL)
-            $html_personal = $this->build_email_html(
-                $html_raw,
-                $item->email,  // Pasar el email para que se procese el UNSUB_URL
-                [
-                    'inline'        => true,    // Activar inlining para Gmail
-                    'preserve_css'  => false,   // Gmail necesita estilos inline puros
-                    'reset_links'   => true     // Aplicar todas las correcciones
-                ]
-            );
-            
-            $ok = wp_mail( $item->email, $subject, $html_personal, $headers );
-            if( $ok ){
-                $wpdb->update($table_items, ['status'=>'sent','attempts'=>$item->attempts+1], ['id'=>$item->id], ['%s','%d'], ['%d']);
-                $sent++;
-            }else{
-                $wpdb->update($table_items, ['status'=>'failed','attempts'=>$item->attempts+1,'error'=>'wp_mail false'], ['id'=>$item->id], ['%s','%d','%s'], ['%d']);
-                $failed++;
-            }
-        }
-        
-        // Actualizar totales
-        $wpdb->query( $wpdb->prepare("UPDATE {$table_jobs} SET sent = sent + %d, failed = failed + %d WHERE id=%d", $sent, $failed, $job->id ) );
-
-        // IMPORTANTE: Programar siguiente ejecución SIEMPRE que haya trabajo pendiente
-        if( (int) $wpdb->get_var( $wpdb->prepare("SELECT COUNT(*) FROM {$table_items} WHERE job_id=%d AND status='queued'", $job->id ) ) > 0 ){
-            wp_schedule_single_event( time() + 60, self::CRON_HOOK );
-        }
-        
-        // Verificar si hay otros trabajos pendientes para procesar
-        $next_job = $wpdb->get_row( $wpdb->prepare(
-            "SELECT * FROM {$table_jobs} 
-             WHERE status IN('pending','running') 
-             AND start_at <= %s 
-             AND start_at >= %s 
-             AND start_at <= %s
-             AND id != %d 
-             ORDER BY id ASC LIMIT 1", 
-             $current_time_utc, 
-             $today_start_utc,
-             $today_end_utc,
-             $job->id 
-        ) );
-        if( $next_job ) {
-            wp_schedule_single_event( time() + 30, self::CRON_HOOK );
-        }
+        // Delegar al Campaign Manager
+        $campaign_manager = WEC_Campaign_Manager::get_instance();
+        $campaign_manager->render_campaigns_page();
     }
 
     /*** SMTP ***/
@@ -786,27 +385,6 @@ JS;
         // Delegar al SMTP Manager
         $smtp_manager = WEC_SMTP_Manager::get_instance();
         $smtp_manager->render_smtp_settings();
-    }
-
-    /*** Send test ***/
-    // Las funciones de envío de test ahora están en WEC_SMTP_Manager
-
-    /*** Configurar Cron Persistente ***/
-    public function setup_recurring_cron() {
-        // Solo configurar en frontend para evitar conflictos en admin
-        if (is_admin()) return;
-        
-        // Verificar si hay trabajos pendientes o en ejecución (no expirados)
-        global $wpdb;
-        $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
-        $pending_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')");
-        
-        if ($pending_jobs > 0) {
-            // Si hay trabajos pendientes, asegurar que hay un cron programado
-            if (!wp_next_scheduled(self::CRON_HOOK)) {
-                wp_schedule_single_event(time() + 60, self::CRON_HOOK);
-            }
-        }
     }
 
     /**
@@ -865,57 +443,6 @@ JS;
         }
 
         return $this->wrap_email_html($html);
-    }
-
-    private function gather_emails_full_scan(){
-        $emails = [];
-        $users = get_users(['fields'=>['user_email'], 'number' => 5000]);
-        foreach($users as $u){ if(is_email($u->user_email)) $emails[] = strtolower($u->user_email); }
-        // Comentarios paginados
-        $paged = 1; $per = 1000;
-        do {
-            $cmts = get_comments(['status'=>'approve','type'=>'comment','number'=>$per,'paged'=>$paged,'fields'=>'ids']);
-            if(!$cmts) break;
-            foreach($cmts as $cid){
-                $c = get_comment($cid);
-                if($c && is_email($c->comment_author_email)) $emails[] = strtolower($c->comment_author_email);
-            }
-            $paged++;
-        } while (count($cmts)===$per);
-        return array_values( array_unique($emails) );
-    }
-
-    private function parse_pasted_emails( $raw ){
-        $lines = preg_split('/\r\n|\r|\n/', $raw);
-        $out = [];
-        foreach($lines as $ln){
-            $ln = trim($ln);
-            if($ln && is_email($ln)) $out[] = strtolower($ln);
-        }
-        return array_values(array_unique($out));
-    }
-
-    private function filter_unsubscribed( $emails ){
-        $emails = array_values(array_unique(array_map(function($e){ return strtolower(trim($e)); }, $emails)));
-        if (empty($emails)) return $emails;
-        global $wpdb;
-        $table = $wpdb->prefix . self::DB_TABLE_SUBSCRIBERS;
-        $placeholders = implode(',', array_fill(0, count($emails), '%s'));
-        $sql = $wpdb->prepare("SELECT email FROM {$table} WHERE status='unsubscribed' AND email IN ($placeholders)", $emails);
-        $blocked = $wpdb->get_col($sql);
-        if (!$blocked) return $emails;
-        $blocked = array_flip($blocked);
-        $out = [];
-        foreach($emails as $e){ if (!isset($blocked[$e])) $out[] = $e; }
-        return $out;
-    }
-
-    private function is_unsubscribed( $email ){
-        global $wpdb;
-        $table = $wpdb->prefix . self::DB_TABLE_SUBSCRIBERS;
-        $email = strtolower(trim($email));
-        $st = $wpdb->get_var( $wpdb->prepare("SELECT status FROM {$table} WHERE email=%s", $email) );
-        return ( $st === 'unsubscribed' );
     }
 
     private function render_template_content( $tpl_id ){
@@ -1876,11 +1403,14 @@ JS;
                 <div class="wec-toolbar">
                     <span id="wec-preview-subject">Vista previa del email</span>
                     <div class="sep"></div>
-                    <button type="button" class="button" onclick="tb_remove();">Cerrar</button>
+                    <button type="button" class="button" data-wec-size="mobile">📱 Móvil 360</button>
+                    <button type="button" class="button" data-wec-size="tablet">📟 Tablet 600</button>
+                    <button type="button" class="button" data-wec-size="desktop">💻 Desktop 800</button>
+                    <button type="button" class="button" data-wec-size="full">🖥️ Ancho libre</button>
                 </div>
                 <div class="wec-canvas">
-                    <div class="wec-frame-wrap">
-                        <div class="wec-frame-info">Vista previa del template</div>
+                    <div class="wec-frame-wrap" id="wec-frame-wrap">
+                        <div class="wec-frame-info" id="wec-frame-info">Vista previa del template</div>
                         <iframe id="wec-preview-iframe" src="about:blank"></iframe>
                     </div>
                 </div>
@@ -1911,88 +1441,6 @@ JS;
         }
     }
 
-    /*** Endpoint para cron externo: /tu-sitio.com/?wec_cron=true&secret=tu_clave_secreta
-     * Permite ejecutar el cron desde sistemas externos de forma segura
-     */
-    public function handle_external_cron() {
-        // Solo procesar si es una petición de cron externo
-        if (!isset($_GET['wec_cron']) || $_GET['wec_cron'] !== 'true') {
-            return;
-        }
-        
-        // Validación de seguridad
-        $secret = $_GET['secret'] ?? '';
-        $expected_secret = defined('WEC_CRON_SECRET') ? WEC_CRON_SECRET : 'curren_email_cron_2024';
-        
-        if ($secret !== $expected_secret) {
-            http_response_code(403);
-            header('Content-Type: text/plain; charset=UTF-8');
-            echo "ERROR 403: Clave secreta incorrecta\n";
-            echo "Usa: ?wec_cron=true&secret=tu_clave_secreta\n";
-            exit;
-        }
-        
-        // Log del acceso
-        $debug_info = [
-            'timestamp' => date('Y-m-d H:i:s'),
-            'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
-            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'unknown'
-        ];
-        
-        // Ejecutar cron
-        ob_start();
-        $start_time = microtime(true);
-        
-        try {
-            $this->process_queue_cron();
-            $execution_time = round((microtime(true) - $start_time) * 1000, 2);
-            
-            // Verificar estado después de la ejecución
-            global $wpdb;
-            $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
-            $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
-            
-            $pending_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status IN('pending','running')");
-            $queued_items = $wpdb->get_var("SELECT COUNT(*) FROM {$table_items} WHERE status='queued'");
-            $expired_jobs = $wpdb->get_var("SELECT COUNT(*) FROM {$table_jobs} WHERE status='expired'");
-            
-            $output = ob_get_clean();
-            
-            // Respuesta exitosa
-            http_response_code(200);
-            header('Content-Type: text/plain; charset=UTF-8');
-            echo "✅ WEC CRON EJECUTADO CORRECTAMENTE\n";
-            echo "⏱️  Tiempo: {$execution_time}ms\n";
-            echo "📧 Trabajos pendientes: {$pending_jobs}\n";
-            echo "📋 Items en cola: {$queued_items}\n";
-            if ($expired_jobs > 0) {
-                echo "⚠️  Campañas expiradas: {$expired_jobs}\n";
-            }
-            echo "🕐 Hora: " . date('Y-m-d H:i:s') . " (" . date_default_timezone_get() . ")\n";
-            echo "🏠 IP: " . $debug_info['ip'] . "\n";
-            
-            if ($pending_jobs > 0) {
-                echo "\n💡 INFO: Hay trabajos pendientes, el cron debería ejecutarse nuevamente.\n";
-            } else {
-                echo "\n🎉 INFO: No hay trabajos pendientes.\n";
-            }
-            
-        } catch (Exception $e) {
-            ob_end_clean();
-            
-            http_response_code(500);
-            header('Content-Type: text/plain; charset=UTF-8');
-            echo "❌ ERROR EN CRON:\n";
-            echo $e->getMessage() . "\n";
-            echo "🕐 Hora: " . date('Y-m-d H:i:s') . "\n";
-            
-            // Log del error
-            error_log("WEC_EXTERNAL_CRON_ERROR: " . $e->getMessage());
-        }
-        
-        exit;
-    }
-
     // ...existing code...
 }
 
@@ -2004,7 +1452,7 @@ add_shortcode('email_unsubscribe', function() {
     if (!is_email($email)) return '<p>Correo inválido.</p>';
 
     global $wpdb;
-    $table = $wpdb->prefix . WEC_Email_Collector::DB_TABLE_SUBSCRIBERS;
+    $table = $wpdb->prefix . 'wec_subscribers';
     $row = $wpdb->get_row($wpdb->prepare(
         "SELECT * FROM {$table} WHERE email=%s AND unsub_token=%s",
         $email, $token
@@ -2088,8 +1536,8 @@ function wec_install_tables() {
         ) {$charset}");
         
         if ($result === false) {
-            // Si falla la creación, registrar error pero continuar
-            error_log('WEC: Error creating subscribers table: ' . $wpdb->last_error);
+            // Si falla la creación, continuar sin mostrar error en producción
+            // La tabla se creará en un intento posterior
         }
     }
     // Si la tabla existe, NO TOCAR NADA para evitar problemas de índices
