@@ -3,11 +3,20 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
-## [7.1.0] - 2025-11-23 - Independencia SMTP y Fix Índices BD
+## [7.1.0] - 2025-11-23 - Limpieza y optimización SMTP
 
 ### 🛠️ Mejoras principales
-- **SMTP independiente**: La configuración SMTP del plugin ahora es completamente independiente y no depende de la configuración de otros plugins SMTP instalados. Se fuerza la prioridad de los hooks y la inicialización para evitar conflictos y garantizar que los envíos usen siempre la configuración propia de Email Collector.
-- **Fix de índices en base de datos**: Se resolvió el problema de índices duplicados o ausentes en la columna `email` de la tabla de suscriptores. Ahora el sistema detecta, repara y asegura que solo exista un índice único sobre el email, evitando errores de duplicidad y mejorando la integridad de los datos.
+- **Eliminación total de lógica SMTP propia**: Se eliminó todo el código, UI y lógica de configuración SMTP y .env del plugin. Ahora el envío SMTP depende exclusivamente de WP Mail SMTP u otros plugins externos.
+- **Refactorización y limpieza**: El código del gestor de plantillas y pruebas de envío fue optimizado, eliminando parámetros, hooks y métodos obsoletos. Solo permanece la gestión de plantillas y el formulario de prueba.
+- **Changelog actualizado**: Documentación de la transición a dependencia exclusiva de WP Mail SMTP para el envío de correos.
+
+### 🐛 Correcciones
+- Eliminados errores fatales por métodos huérfanos tras la limpieza de SMTP.
+- Validación de sintaxis y funcionamiento tras la refactorización.
+
+### 🔧 Notas técnicas
+- El plugin ya no contiene lógica SMTP propia ni dependencias de .env.
+- El formulario de prueba solo permite seleccionar plantilla y destinatario.
 
 ### 🐛 Correcciones
 - Corrección de conflictos SMTP con otros plugins.

@@ -1,19 +1,12 @@
 <?php
 /**
- * WP Email Collector - SMTP Configuration Manager
- * 
- * Gestiona toda la configuración SMTP del plugin:
- * - Configuración desde UI admin
- * - Configuración desde archivos .env
- * - Setup de PHPMailer
- * - Envío de emails de prueba
- * - Renderizado seguro de plantillas con fallback
- * 
+ * WP Email Collector - Gestor de Plantillas de Email
+ *
+ * Gestiona el envío de emails de prueba y la renderización de plantillas.
+ *
  * @since 7.1.0
  * @requires PHP 7.4+ (WordPress minimum requirement)
  * @requires WordPress 5.0+
- * 
- * Note: Uses anonymous classes (PHP 7.0+ feature) for Template Manager adapter pattern
  */
 
 if (!defined('ABSPATH')) exit;
@@ -58,9 +51,7 @@ class WEC_SMTP_Manager {
     private $template_renderer = null;
     
     /** Constantes para configuración */
-    const OPT_SMTP = 'wec_smtp_settings';
     const SEND_TEST_ACTION = 'wec_send_test';
-    const ENV_PATH = 'programData/emailsWishList/.env';
     const EMAIL_TEMPLATE_POST_TYPE = 'wec_email_tpl';
     
     /**
@@ -128,11 +119,37 @@ class WEC_SMTP_Manager {
     }
     
     /**
-     * Obtiene la ruta completa del archivo .env
-     * @return string
+     * Renderiza el formulario de prueba de email y gestión de plantillas
+     * @param array $templates Lista de plantillas disponibles
      */
-    private function get_env_file_path() {
-        return ABSPATH . self::ENV_PATH;
+    public function render_smtp_form($templates = []) {
+        ?>
+        <div class="wrap">
+            <h1><?php esc_html_e('Enviar Email de Prueba', 'wp-email-collector'); ?></h1>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                <?php wp_nonce_field('wec_send_test'); ?>
+                <input type="hidden" name="action" value="<?php echo esc_attr(self::SEND_TEST_ACTION); ?>">
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><label for="wec_test_email"><?php esc_html_e('Email de destino', 'wp-email-collector'); ?></label></th>
+                        <td><input type="email" name="wec_test_email" id="wec_test_email" required class="regular-text" placeholder="tucorreo@ejemplo.com"></td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="wec_template_id"><?php esc_html_e('Plantilla de Email', 'wp-email-collector'); ?></label></th>
+                        <td>
+                            <select name="wec_template_id" id="wec_template_id" required>
+                                <option value=""><?php esc_html_e('Selecciona una plantilla', 'wp-email-collector'); ?></option>
+                                <?php foreach ($templates as $tpl): ?>
+                                    <option value="<?php echo esc_attr($tpl->ID); ?>"><?php echo esc_html($tpl->post_title); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </td>
+                    </tr>
+                </table>
+                <?php submit_button(__('Enviar Email de Prueba', 'wp-email-collector')); ?>
+            </form>
+        </div>
+        <?php
     }
     
     /**
@@ -151,114 +168,22 @@ class WEC_SMTP_Manager {
      * Inicializa los hooks de WordPress
      */
     private function init_hooks() {
-        // Setup de PHPMailer con PRIORIDAD ALTA para sobrescribir otros plugins SMTP
-        add_action('phpmailer_init', [$this, 'setup_phpmailer'], 99); // Prioridad 99 (muy alta)
-        
         // Handler para envío de emails de prueba
         add_action('admin_post_' . self::SEND_TEST_ACTION, [$this, 'handle_send_test']);
-        
         // Filtro para forzar contenido HTML en emails
         add_filter('wp_mail_content_type', [$this, 'set_mail_content_type']);
-        
-        // Hook adicional para forzar configuración FROM en wp_mail
-        add_filter('wp_mail', [$this, 'force_from_configuration'], 99);
     }
     
     /**
-     * Renderiza la página de configuración SMTP
+     * Renderiza la página de configuración de email de prueba
      */
     public function render_smtp_settings() {
         if (!current_user_can('manage_options')) {
             wp_die(__('No tienes permisos para acceder a esta página.', 'wp-email-collector'));
         }
-        
-        // Verificar si existe archivo .env
-        $env_path = $this->get_env_file_path();
-        $env = [];
-        $env_active = false;
-        $env_error = null;
-        
-        if (file_exists($env_path)) {
-            $env_result = $this->parse_env_file($env_path);
-            
-            if (is_wp_error($env_result)) {
-                // Error al leer .env - mostrar advertencia pero continuar
-                $env_error = $env_result;
-                $env = [];
-                echo '<div class="notice notice-error"><p><strong>' . __('Error en archivo .env:', 'wp-email-collector') . '</strong> ' . esc_html($env_result->get_error_message()) . '</p></div>';
-            } else {
-                // .env leído correctamente
-                $env = $env_result;
-                $env_active = true;
-                echo '<div class="notice notice-success"><p>' . sprintf(__('Modo .env activo: usando %s.', 'wp-email-collector'), '<code>' . esc_html($env_path) . '</code>') . '</p></div>';
-            }
-        }
-        
-        // Obtener configuración actual (prioridad: .env > base de datos)
-        $opts = get_option(self::OPT_SMTP, []);
-        $config = $this->get_smtp_config($env, $opts);
-        
-        // Procesar formulario de guardado
-        if (isset($_POST['wec_smtp_save']) && check_admin_referer('wec_smtp_save')) {
-            $this->save_smtp_settings($_POST);
-            echo '<div class="notice notice-success"><p>' . __('Configuración SMTP guardada correctamente.', 'wp-email-collector') . '</p></div>';
-            
-            // Actualizar configuración después del guardado
-            $opts = get_option(self::OPT_SMTP, []);
-            $config = $this->get_smtp_config($env, $opts);
-        }
-        
-        // Mostrar mensaje de test si viene de redirect
         $this->show_test_message();
-        
-        // Obtener plantillas disponibles
         $templates = $this->get_email_templates();
-        
-        $this->render_smtp_form($config, $env_active, $templates);
-    }
-    
-    /**
-     * Obtiene la configuración SMTP combinada
-     */
-    private function get_smtp_config($env = [], $opts = []) {
-        return [
-            'host'      => $env['SMTP_HOST'] ?? ($opts['host'] ?? ''),
-            'port'      => $env['SMTP_PORT'] ?? ($opts['port'] ?? 587),
-            'user'      => $env['SMTP_USER'] ?? ($opts['user'] ?? ''),
-            'pass'      => $env['SMTP_PASS'] ?? ($opts['pass'] ?? ''),
-            'secure'    => $env['SMTP_USE_SSL'] ?? ($opts['secure'] ?? ''),
-            'from_name' => $env['FROM_NAME'] ?? ($opts['from_name'] ?? ''),
-            'from'      => $env['FROM_EMAIL'] ?? ($opts['from'] ?? ''),
-        ];
-    }
-    
-    /**
-     * Guarda la configuración SMTP con validación completa
-     */
-    private function save_smtp_settings($post_data) {
-        // Sanitizar y validar tipo de cifrado
-        $secure = sanitize_text_field($post_data['SMTP_USE_SSL'] ?? '');
-        if (!in_array($secure, ['', 'tls', 'ssl'], true)) {
-            $secure = '';
-        }
-        
-        // Validar puerto SMTP dentro del rango válido
-        $port = intval($post_data['SMTP_PORT'] ?? 0);
-        if ($port < 1 || $port > 65535) {
-            $port = 587; // Default to standard SMTP port
-        }
-        
-        $opts = [
-            'host'      => sanitize_text_field($post_data['SMTP_HOST'] ?? ''),
-            'port'      => $port,
-            'user'      => sanitize_text_field($post_data['SMTP_USER'] ?? ''),
-            'pass'      => sanitize_text_field($post_data['SMTP_PASS'] ?? ''),
-            'secure'    => $secure,
-            'from'      => sanitize_email($post_data['FROM_EMAIL'] ?? ''),
-            'from_name' => sanitize_text_field($post_data['FROM_NAME'] ?? ''),
-        ];
-        
-        update_option(self::OPT_SMTP, $opts);
+        $this->render_smtp_form($templates);
     }
     
     /**
@@ -269,24 +194,17 @@ class WEC_SMTP_Manager {
             // Sanitizar parámetros de entrada
             $test_result = sanitize_text_field($_GET['test']);
             $test_nonce = sanitize_text_field($_GET['test_nonce']);
-            
             // Validar que el test result esté en la lista de valores permitidos
             if (!in_array($test_result, ['ok', 'fail'], true)) {
                 return; // Valor no permitido, no mostrar mensaje
             }
-            
             // Crear nonce específico para este resultado para validación
             $expected_nonce = wp_create_nonce('wec_test_result_' . $test_result);
-            
             // Validar nonce específico para prevenir ataques de manipulación de URL
             if (!hash_equals($expected_nonce, $test_nonce)) {
-                // Log del intento de manipulación para debugging
-                if (defined('WP_DEBUG') && WP_DEBUG) {
-                    error_log("WEC_SMTP_Manager: Invalid nonce for test result '{$test_result}'. Possible URL manipulation attempt.");
-                }
-                return; // Nonce inválido, no mostrar mensaje
+                return;
             }
-            
+            // Mostrar mensaje según resultado
             if ($test_result === 'ok') {
                 echo '<div class="notice notice-success"><p><strong>✅ ' . __('Email de prueba enviado correctamente', 'wp-email-collector') . '</strong> - ' . __('La configuración SMTP funciona.', 'wp-email-collector') . '</p></div>';
             } elseif ($test_result === 'fail') {
@@ -294,437 +212,47 @@ class WEC_SMTP_Manager {
             }
         }
     }
-    
-    /**
-     * Renderiza el formulario de configuración SMTP
-     */
-    private function render_smtp_form($config, $env_active, $templates) {
-        ?>
-        <div class="wrap">
-            <h1><?php esc_html_e('Configuración SMTP', 'wp-email-collector'); ?></h1>
-            
-            <?php if ($env_active): ?>
-            <div class="notice notice-info">
-                <p><strong><?php esc_html_e('📁 Modo .env detectado:', 'wp-email-collector'); ?></strong> <?php esc_html_e('La configuración se lee desde archivo .env. Los cambios en este formulario solo se aplicarán si no hay archivo .env.', 'wp-email-collector'); ?></p>
-            </div>
-            <?php endif; ?>
-            
-            <h2><?php esc_html_e('Configuración del Servidor', 'wp-email-collector'); ?></h2>
-            <form method="post">
-                <?php wp_nonce_field('wec_smtp_save'); ?>
-                <table class="form-table">
-                    <tr>
-                        <th><label for="SMTP_HOST"><?php esc_html_e('Servidor SMTP', 'wp-email-collector'); ?></label></th>
-                        <td>
-                            <input id="SMTP_HOST" name="SMTP_HOST" value="<?php echo esc_attr($config['host']); ?>" class="regular-text" placeholder="smtp.ejemplo.com">
-                            <p class="description"><?php esc_html_e('El servidor SMTP de tu proveedor de email.', 'wp-email-collector'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><label for="SMTP_PORT"><?php esc_html_e('Puerto', 'wp-email-collector'); ?></label></th>
-                        <td>
-                            <input id="SMTP_PORT" name="SMTP_PORT" value="<?php echo esc_attr($config['port']); ?>" class="small-text" type="number" placeholder="587">
-                            <p class="description"><?php esc_html_e('Puerto del servidor SMTP (587 para TLS, 465 para SSL, 25 sin cifrado).', 'wp-email-collector'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><label for="SMTP_USER"><?php esc_html_e('Usuario SMTP', 'wp-email-collector'); ?></label></th>
-                        <td>
-                            <input id="SMTP_USER" name="SMTP_USER" value="<?php echo esc_attr($config['user']); ?>" class="regular-text" placeholder="tu-email@ejemplo.com">
-                            <p class="description"><?php esc_html_e('Usuario para autenticación SMTP (generalmente tu email).', 'wp-email-collector'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><label for="SMTP_PASS"><?php esc_html_e('Contraseña SMTP', 'wp-email-collector'); ?></label></th>
-                        <td>
-                            <input id="SMTP_PASS" name="SMTP_PASS" type="password" value="<?php echo esc_attr($config['pass']); ?>" class="regular-text" placeholder="<?php echo esc_attr__('tu-contraseña', 'wp-email-collector'); ?>" autocomplete="current-password">
-                            <p class="description"><?php esc_html_e('Contraseña o token de aplicación para SMTP.', 'wp-email-collector'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><label for="FROM_NAME"><?php esc_html_e('Nombre del remitente', 'wp-email-collector'); ?></label></th>
-                        <td>
-                            <input id="FROM_NAME" name="FROM_NAME" value="<?php echo esc_attr($config['from_name']); ?>" class="regular-text" placeholder="Mi Empresa">
-                            <p class="description"><?php esc_html_e('El nombre que aparecerá como remitente de los emails.', 'wp-email-collector'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><label for="FROM_EMAIL"><?php esc_html_e('Email del remitente', 'wp-email-collector'); ?></label></th>
-                        <td>
-                            <input id="FROM_EMAIL" name="FROM_EMAIL" value="<?php echo esc_attr($config['from']); ?>" class="regular-text" type="email" placeholder="noreply@tudominio.com">
-                            <p class="description"><?php esc_html_e('La dirección de email que aparecerá como remitente.', 'wp-email-collector'); ?></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th><label for="SMTP_USE_SSL"><?php esc_html_e('Cifrado', 'wp-email-collector'); ?></label></th>
-                        <td>
-                            <select name="SMTP_USE_SSL" id="SMTP_USE_SSL">
-                                <option value="" <?php selected($config['secure'], ''); ?>><?php esc_html_e('Sin cifrado', 'wp-email-collector'); ?></option>
-                                <option value="tls" <?php selected($config['secure'], 'tls'); ?>><?php esc_html_e('TLS (recomendado)', 'wp-email-collector'); ?></option>
-                                <option value="ssl" <?php selected($config['secure'], 'ssl'); ?>><?php esc_html_e('SSL', 'wp-email-collector'); ?></option>
-                            </select>
-                            <p class="description"><?php esc_html_e('Tipo de cifrado de la conexión SMTP.', 'wp-email-collector'); ?></p>
-                        </td>
-                    </tr>
-                </table>
-                
-                <?php if (!$env_active): ?>
-                <p class="submit">
-                    <button class="button button-primary" name="wec_smtp_save" value="1"><?php esc_html_e('Guardar Configuración', 'wp-email-collector'); ?></button>
-                </p>
-                <?php else: ?>
-                <p class="submit">
-                    <button class="button" name="wec_smtp_save" value="1" disabled><?php esc_html_e('Configuración desde .env (solo lectura)', 'wp-email-collector'); ?></button>
-                </p>
-                <?php endif; ?>
-            </form>
 
-            <hr>
-
-            <h2><?php esc_html_e('Probar Configuración SMTP', 'wp-email-collector'); ?></h2>
-            <p><?php esc_html_e('Envía un email de prueba para verificar que la configuración SMTP funciona correctamente.', 'wp-email-collector'); ?></p>
-            <?php $this->render_test_form($templates); ?>
-
-            <?php $this->render_additional_info(); ?>
-        </div>
-        <?php
-        
-        // Incluir modal de vista previa si hay plantillas
-        if ($templates) {
-            echo $this->render_preview_modal();
-        }
-    }
-    
-    /**
-     * Renderiza el formulario de prueba
-     */
-    private function render_test_form($templates) {
-        ?>
-        <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-            <input type="hidden" name="action" value="<?php echo esc_attr(self::SEND_TEST_ACTION); ?>">
-            <?php wp_nonce_field('wec_send_test'); ?>
-            <table class="form-table">
-                <tr>
-                    <th><label for="wec_template_id"><?php esc_html_e('Plantilla', 'wp-email-collector'); ?></label></th>
-                    <td class="wec-inline">
-                        <select name="wec_template_id" id="wec_template_id">
-                            <?php if ($templates): foreach ($templates as $tpl): ?>
-                            <option value="<?php echo esc_attr($tpl->ID); ?>"><?php echo esc_html($tpl->post_title ?: __('(sin título)', 'wp-email-collector')); ?></option>
-                            <?php endforeach; else: ?>
-                            <option value=""><?php esc_html_e('No hay plantillas disponibles', 'wp-email-collector'); ?></option>
-                            <?php endif; ?>
-                        </select>
-                        <?php if ($templates): ?>
-                        <button id="wec-btn-preview" type="button" class="button"><?php esc_html_e('Vista previa', 'wp-email-collector'); ?></button>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <tr>
-                    <th><label for="wec_test_email"><?php esc_html_e('Correo destinatario', 'wp-email-collector'); ?></label></th>
-                    <td>
-                        <input type="email" name="wec_test_email" id="wec_test_email" class="regular-text" required placeholder="prueba@ejemplo.com">
-                        <p class="description"><?php esc_html_e('Email donde se enviará la prueba.', 'wp-email-collector'); ?></p>
-                    </td>
-                </tr>
-            </table>
-            <p class="submit">
-                <?php if ($templates): ?>
-                <button class="button button-primary"><?php esc_html_e('Enviar Email de Prueba', 'wp-email-collector'); ?></button>
-                <?php else: ?>
-                <span class="description"><?php esc_html_e('Primero crea una plantilla de email para poder enviar pruebas.', 'wp-email-collector'); ?></span>
-                <?php endif; ?>
-            </p>
-        </form>
-        <?php
-    }
-    
-    /**
-     * Renderiza información adicional
-     */
-    private function render_additional_info() {
-        $templates = $this->get_email_templates();
-        ?>
-        <h3><?php esc_html_e('Gestión de Plantillas', 'wp-email-collector'); ?></h3>
-        <?php if ($templates): ?>
-        <p>
-            <a class="button" href="<?php echo esc_url(admin_url('edit.php?post_type=' . self::EMAIL_TEMPLATE_POST_TYPE)); ?>"><?php esc_html_e('Gestionar Plantillas', 'wp-email-collector'); ?></a>
-            <a class="button button-secondary" href="<?php echo esc_url(admin_url('post-new.php?post_type=' . self::EMAIL_TEMPLATE_POST_TYPE)); ?>"><?php esc_html_e('Crear Nueva Plantilla', 'wp-email-collector'); ?></a>
-        </p>
-        <?php else: ?>
-        <p>
-            <strong><?php esc_html_e('No hay plantillas creadas.', 'wp-email-collector'); ?></strong> 
-            <a class="button button-primary" href="<?php echo esc_url(admin_url('post-new.php?post_type=' . self::EMAIL_TEMPLATE_POST_TYPE)); ?>"><?php esc_html_e('Crear Primera Plantilla', 'wp-email-collector'); ?></a>
-        </p>
-        <?php endif; ?>
-        
-        <h3><?php esc_html_e('Configuración .env (Opcional)', 'wp-email-collector'); ?></h3>
-        <p><?php esc_html_e('Para mayor seguridad, puedes configurar los datos SMTP en un archivo', 'wp-email-collector'); ?> <code>.env</code> <?php esc_html_e('en la ruta:', 'wp-email-collector'); ?></p>
-        <code><?php echo esc_html($this->get_env_file_path()); ?></code>
-        
-        <p><?php esc_html_e('Ejemplo de contenido del archivo .env:', 'wp-email-collector'); ?></p>
-        <pre style="background: #f0f0f0; padding: 10px; border-radius: 4px; font-family: monospace;">
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=tu-email@gmail.com
-SMTP_PASS=tu-contraseña-o-token
-SMTP_USE_SSL=tls
-FROM_NAME=Tu Nombre
-FROM_EMAIL=noreply@tudominio.com
-        </pre>
-        <?php
-    }
-    
-    /**
-     * Renderiza el modal de vista previa compatible con el JavaScript existente
-     */
-    private function render_preview_modal() {
-        return '
-        <div id="wec-preview-modal" style="display:none;">
-            <div id="wec-preview-wrap">
-                <div class="wec-toolbar">
-                    <span id="wec-preview-subject">' . esc_html__('Vista previa del email', 'wp-email-collector') . '</span>
-                    <div class="sep"></div>
-                    <button type="button" class="button wec-close-preview" onclick="tb_remove();">' . esc_html__('Cerrar', 'wp-email-collector') . '</button>
-                </div>
-                <div class="wec-canvas">
-                    <div class="wec-frame-wrap" id="wec-frame-wrap">
-                        <div class="wec-frame-info" id="wec-frame-info">' . esc_html__('Vista previa del template', 'wp-email-collector') . '</div>
-                        <iframe id="wec-preview-iframe" src="about:blank"></iframe>
-                    </div>
-                </div>
-            </div>
-        </div>';
-    }
-    
-    /**
-     * Configura PHPMailer con los ajustes SMTP
-     * @param PHPMailer $phpmailer
-     */
-    public function setup_phpmailer($phpmailer) {
-        $config = $this->get_current_smtp_config();
-        
-        // Log de configuración para debugging
-        error_log("WEC SMTP Setup (PRIORIDAD ALTA): Host={$config['host']}, Port={$config['port']}, User={$config['user']}, Secure={$config['secure']}");
-        
-        if (empty($config['host'])) {
-            error_log("WEC SMTP: No hay configuración SMTP - verificar settings o archivo .env");
-            return; // No hay configuración SMTP
-        }
-        
-        // FORZAR configuración SMTP sobrescribiendo cualquier configuración previa
-        $phpmailer->isSMTP();
-        $phpmailer->Host = $config['host'];
-        
-        if (!empty($config['port'])) {
-            $phpmailer->Port = intval($config['port']);
-        } else {
-            // Puerto por defecto según el tipo de seguridad
-            if ($config['secure'] === 'ssl') {
-                $phpmailer->Port = 465;
-            } elseif ($config['secure'] === 'tls') {
-                $phpmailer->Port = 587;
-            } else {
-                $phpmailer->Port = 25; // Sin cifrado
-            }
-        }
-        
-        // FORZAR autenticación
-        if (!empty($config['user'])) {
-            $phpmailer->SMTPAuth = true;
-            $phpmailer->Username = $config['user'];
-            $phpmailer->Password = $config['pass'] ?? '';
-        } else {
-            $phpmailer->SMTPAuth = false;
-        }
-        
-        // FORZAR cifrado
-        if (!empty($config['secure'])) {
-            $secure_value = strtolower(trim($config['secure']));
-            
-            // Manejar valores que pueden venir del .env como "true"/"false"
-            if ($secure_value === 'true') {
-                $secure_value = 'tls'; // Default para puerto 587
-                error_log("WEC SMTP: Convertido 'true' a 'tls' para compatibilidad con puerto {$phpmailer->Port}");
-            } elseif ($secure_value === 'false') {
-                $secure_value = ''; // Sin cifrado
-            }
-            
-            if ($secure_value === 'tls') {
-                $phpmailer->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
-                error_log("WEC SMTP: Usando STARTTLS");
-            } elseif ($secure_value === 'ssl') {
-                $phpmailer->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
-                error_log("WEC SMTP: Usando SSL/TLS");
-            } else {
-                error_log("WEC SMTP: Sin cifrado configurado");
-            }
-        }
-        
-        // FORZAR configuración From sobrescribiendo completamente
-        if (!empty($config['from']) && is_email($config['from'])) {
-            try {
-                // Limpiar configuraciones FROM previas
-                // $phpmailer->clearAllRecipients(); // No borrar destinatarios, esto causa error
-                $phpmailer->clearReplyTos();
-                
-                // Establecer FROM de forma forzosa
-                $phpmailer->setFrom($config['from'], $config['from_name'] ?? get_bloginfo('name'), false);
-                
-                // Asegurar que no sea sobrescrito
-                $phpmailer->From = $config['from'];
-                $phpmailer->FromName = $config['from_name'] ?? get_bloginfo('name');
-                
-                error_log("WEC SMTP: FROM forzado a: {$config['from_name']} <{$config['from']}>");
-            } catch (Exception $e) {
-                error_log("WEC SMTP: Error configurando From: " . $e->getMessage());
-                // Intentar sin validación
-                $phpmailer->From = $config['from'];
-                $phpmailer->FromName = $config['from_name'] ?? get_bloginfo('name');
-            }
-        }
-        
-        // Configuración adicional para mejor compatibilidad
-        $phpmailer->CharSet = 'UTF-8';
-        $phpmailer->Encoding = 'quoted-printable';
-        $phpmailer->WordWrap = 120;
-        
-        // Configurar timeout para evitar bloqueos
-        $phpmailer->Timeout = 30;
-        $phpmailer->SMTPTimeout = 30;
-        
-        // Opciones adicionales para mejor compatibilidad (especialmente XAMPP)
-        $phpmailer->SMTPOptions = array(
-            'ssl' => array(
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-                'allow_self_signed' => true,
-                'cafile' => '', // Evitar problemas de certificados
-                'capath' => '',
-                'ciphers' => 'HIGH:!SSLv2:!SSLv3', // Cifrados seguros
-                'disable_compression' => true
-            ),
-            'tls' => array(
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-                'allow_self_signed' => true
-            )
-        );
-        
-        // Configuración adicional específica para XAMPP
-        if (strpos(strtolower($_SERVER['SERVER_SOFTWARE'] ?? ''), 'apache') !== false) {
-            error_log("WEC SMTP: Detectado Apache (probablemente XAMPP) - aplicando configuración específica");
-            $phpmailer->SMTPAutoTLS = false; // Deshabilitar auto-TLS que puede causar problemas
-            $phpmailer->SMTPKeepAlive = false; // No mantener conexión activa
-        }
-        
-        // Debug en desarrollo (solo si WP_DEBUG está activo)
-        if (defined('WP_DEBUG') && WP_DEBUG) {
-            $phpmailer->SMTPDebug = 3; // Debug COMPLETO
-            $phpmailer->Debugoutput = function($str, $level) {
-                error_log("WEC SMTP Debug: " . trim($str));
-            };
-        }
-        
-        error_log("WEC SMTP: Configuración aplicada exitosamente (SOBRESCRIBIENDO otros plugins)");
-    }
-    
-    /**
-     * Obtiene la configuración SMTP actual
-     * @return array
-     */
-    public function get_current_smtp_config() {
-        $env_path = $this->get_env_file_path();
-        $env = [];
-        
-        if (file_exists($env_path)) {
-            $env_result = $this->parse_env_file($env_path);
-            
-            if (is_wp_error($env_result)) {
-                // Log del error pero continuar con base de datos
-                error_log('WEC_SMTP_Manager: Error reading .env file in get_current_smtp_config: ' . $env_result->get_error_message());
-                $env = []; // Usar configuración vacía y recurrir a base de datos
-            } else {
-                $env = $env_result;
-            }
-        }
-        
-        $opts = get_option(self::OPT_SMTP, []);
-        return $this->get_smtp_config($env, $opts);
-    }
-    
     /**
      * Maneja el envío de emails de prueba
      */
     public function handle_send_test() {
-        if (!current_user_can('manage_options')) {
-            wp_die(__('No tienes permisos para acceder a esta función.', 'wp-email-collector'));
-        }
-        
         check_admin_referer('wec_send_test');
-        
         $tpl_id = intval($_POST['wec_template_id'] ?? 0);
         $to = sanitize_email($_POST['wec_test_email'] ?? '');
-        
         if (!$tpl_id || !is_email($to)) {
             wp_die(__('Datos inválidos. Verifica que hayas seleccionado una plantilla y un email válido.', 'wp-email-collector'));
         }
-        
         // Verificar que la plantilla existe
         $template = get_post($tpl_id);
         if (!$template || $template->post_type !== self::EMAIL_TEMPLATE_POST_TYPE) {
             wp_die(__('Plantilla no encontrada o inválida.', 'wp-email-collector'));
         }
-        
         try {
             // Renderizar plantilla con validaciones robustas
             $template_result = $this->render_template_safely($tpl_id);
-            
             if (is_wp_error($template_result)) {
                 wp_die(sprintf(__('Error en la plantilla: %s', 'wp-email-collector'), $template_result->get_error_message()));
             }
-            
             list($subject, $html_content) = $template_result;
-            
             // Procesar HTML para compatibilidad con clientes de email (inlining CSS, resets)
             $html_content = $this->build_email_html($html_content, $to, [
                 'inline'        => true,    // Activar inlining para Gmail
                 'preserve_css'  => false,   // Gmail necesita estilos inline puros  
                 'reset_links'   => true     // Aplicar todas las correcciones
             ]);
-            
-            // Log antes del envío (corregido)
-            $smtp_config = $this->get_current_smtp_config();
-            error_log("WEC SMTP: Intentando enviar email de prueba a {$to} usando host {$smtp_config['host']} puerto {$smtp_config['port']} usuario {$smtp_config['user']} cifrado {$smtp_config['secure']}");
-            
-            // Forzar debug de PHPMailer
-            add_action('phpmailer_init', function($phpmailer) {
-                $phpmailer->SMTPDebug = 3;
-                $phpmailer->Debugoutput = function($str, $level) {
-                    error_log('PHPMailer SMTP Debug: ' . trim($str));
-                };
-            }, 100);
-            
             // Enviar email con captura de errores
             $headers = ['Content-Type: text/html; charset=UTF-8'];
             $ok = wp_mail($to, $subject, $html_content, $headers);
-            error_log("WEC SMTP: Resultado de wp_mail = " . var_export($ok, true));
-            global $phpmailer;
-            if (isset($phpmailer) && !empty($phpmailer->ErrorInfo)) {
-                error_log('PHPMailer ErrorInfo: ' . $phpmailer->ErrorInfo);
-            }
-            
             // Determinar resultado y crear nonce específico para ese resultado
             $test_result = $ok ? 'ok' : 'fail';
             $test_nonce = wp_create_nonce('wec_test_result_' . $test_result);
-            
             // Redirect con resultado y nonce específico
             $redirect_url = admin_url('admin.php?page=wec-smtp&test=' . $test_result . '&test_nonce=' . $test_nonce);
             wp_safe_redirect($redirect_url);
-            
         } catch (Exception $e) {
             wp_die(sprintf(__('Error al enviar email de prueba: %s', 'wp-email-collector'), $e->getMessage()));
         }
-        
         exit;
     }
     
@@ -877,16 +405,16 @@ FROM_EMAIL=noreply@tudominio.com
      */
     private function wrap_in_html_structure($content) {
         return '<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Email</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-    ' . $content . '
-</body>
-</html>';
+                    <html lang="es">
+                        <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <title>Email</title>
+                    </head>
+                    <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                        ' . $content . '
+                    </body>
+                    </html>';
     }
     
     /**
@@ -1405,150 +933,6 @@ FROM_EMAIL=noreply@tudominio.com
         return 'text/html';
     }
     
-    /**
-     * Parsea un archivo .env y devuelve array asociativo con manejo robusto de errores
-     * @param string $file_path
-     * @return array|WP_Error Array con configuración o WP_Error si hay problemas
-     */
-    private function parse_env_file($file_path) {
-        if (!file_exists($file_path)) {
-            return []; // Archivo no existe, retornar array vacío (comportamiento esperado)
-        }
-        
-        // Verificar permisos de lectura antes de intentar leer
-        if (!is_readable($file_path)) {
-            $error_msg = "WEC_SMTP_Manager: .env file exists but is not readable at {$file_path}";
-            error_log($error_msg);
-            return new WP_Error('env_unreadable', __('Archivo .env encontrado pero no se puede leer. Verifica los permisos del archivo.', 'wp-email-collector'), ['file_path' => $file_path]);
-        }
-        
-        $env = [];
-        $lines = file($file_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        
-        if ($lines === false) {
-            $error = error_get_last();
-            $error_msg = "WEC_SMTP_Manager: Unable to read .env file at {$file_path}. Error: " . ($error['message'] ?? 'Unknown error');
-            error_log($error_msg);
-            return new WP_Error('env_read_failed', __('Error al leer el archivo .env. Verifica que el archivo no esté corrupto.', 'wp-email-collector'), ['file_path' => $file_path, 'system_error' => $error['message'] ?? 'Unknown error']);
-        }
-        
-        foreach ($lines as $line_number => $line) {
-            // Ignorar comentarios
-            if (strpos(trim($line), '#') === 0) {
-                continue;
-            }
-            
-            // Buscar formato KEY=VALUE
-            if (strpos($line, '=') !== false) {
-                $parts = explode('=', $line, 2);
-                
-                list($key, $value) = $parts;
-                $key = trim($key);
-                $value = trim($value);
-                
-                // Validar que la clave no esté vacía
-                if (empty($key)) {
-                    error_log("WEC_SMTP_Manager: Empty key found on line " . ($line_number + 1) . ": {$line}");
-                    continue;
-                }
-                
-                // Remover comillas si las hay
-                if ((substr($value, 0, 1) === '"' && substr($value, -1) === '"') ||
-                    (substr($value, 0, 1) === "'" && substr($value, -1) === "'")) {
-                    $value = substr($value, 1, -1);
-                }
-                
-                $env[$key] = $value;
-            }
-        }
-        
-        return $env;
-    }
-    
-    /**
-     * Verifica si la configuración SMTP está completa
-     * @return bool
-     */
-    public function is_smtp_configured() {
-        $config = $this->get_current_smtp_config();
-        return !empty($config['host']) && !empty($config['user']);
-    }
-    
-    /**
-     * Obtiene estadísticas de configuración para debug
-     * @return array
-     */
-    public function get_config_status() {
-        $config = $this->get_current_smtp_config();
-        $env_path = $this->get_env_file_path();
-        
-        // Verificar estado del archivo .env con detalle
-        $env_status = 'not_found';
-        $env_error = null;
-        
-        if (file_exists($env_path)) {
-            $env_result = $this->parse_env_file($env_path);
-            
-            if (is_wp_error($env_result)) {
-                $env_status = 'error';
-                $env_error = $env_result->get_error_message();
-            } else {
-                $env_status = 'ok';
-            }
-        }
-        
-        return [
-            'env_file_exists'       => file_exists($env_path),
-            'env_file_status'       => $env_status,
-            'env_file_error'        => $env_error,
-            'env_file_path'         => $env_path,
-            'host_configured'       => !empty($config['host']),
-            'auth_configured'       => !empty($config['user']),
-            'from_configured'       => !empty($config['from']),
-            'encryption'            => $config['secure'] ?: 'none',
-            'port'                  => $config['port'] ?: 'default',
-            'is_fully_configured'   => $this->is_smtp_configured(),
-            'template_renderer'     => $this->template_renderer !== null ? get_class($this->template_renderer) : 'fallback',
-            'template_manager_available' => class_exists('WEC_Template_Manager'),
-            'template_method_exists' => class_exists('WEC_Template_Manager') && 
-                                       method_exists(WEC_Template_Manager::class, 'render_template_content'),
-        ];
-    }
-    
-    /**
-     * Fuerza la configuración FROM para sobrescribir otros plugins SMTP
-     * @param array $args Argumentos de wp_mail
-     * @return array Argumentos modificados
-     */
-    public function force_from_configuration($args) {
-        $config = $this->get_current_smtp_config();
-        
-        // Solo forzar si tenemos configuración FROM válida
-        if (!empty($config['from']) && is_email($config['from'])) {
-            // Forzar headers FROM
-            if (!isset($args['headers'])) {
-                $args['headers'] = [];
-            }
-            
-            if (!is_array($args['headers'])) {
-                $args['headers'] = explode("\n", $args['headers']);
-            }
-            
-            // Remover headers FROM existentes
-            $args['headers'] = array_filter($args['headers'], function($header) {
-                return stripos($header, 'from:') !== 0;
-            });
-            
-            // Agregar nuestro header FROM
-            $from_name = !empty($config['from_name']) ? $config['from_name'] : get_bloginfo('name');
-            $args['headers'][] = 'From: ' . $from_name . ' <' . $config['from'] . '>';
-            
-            // Log para debugging
-            error_log("WEC SMTP: Forzando FROM: {$from_name} <{$config['from']}>");
-        }
-        
-        return $args;
-    }
 }
 
 endif; // class_exists('WEC_SMTP_Manager')
