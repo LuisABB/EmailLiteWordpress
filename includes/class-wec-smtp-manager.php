@@ -151,14 +151,17 @@ class WEC_SMTP_Manager {
      * Inicializa los hooks de WordPress
      */
     private function init_hooks() {
-        // Setup de PHPMailer
-        add_action('phpmailer_init', [$this, 'setup_phpmailer']);
+        // Setup de PHPMailer con PRIORIDAD ALTA para sobrescribir otros plugins SMTP
+        add_action('phpmailer_init', [$this, 'setup_phpmailer'], 99); // Prioridad 99 (muy alta)
         
         // Handler para envío de emails de prueba
         add_action('admin_post_' . self::SEND_TEST_ACTION, [$this, 'handle_send_test']);
         
         // Filtro para forzar contenido HTML en emails
         add_filter('wp_mail_content_type', [$this, 'set_mail_content_type']);
+        
+        // Hook adicional para forzar configuración FROM en wp_mail
+        add_filter('wp_mail', [$this, 'force_from_configuration'], 99);
     }
     
     /**
@@ -500,29 +503,84 @@ FROM_EMAIL=noreply@tudominio.com
     public function setup_phpmailer($phpmailer) {
         $config = $this->get_current_smtp_config();
         
+        // Log de configuración para debugging
+        error_log("WEC SMTP Setup (PRIORIDAD ALTA): Host={$config['host']}, Port={$config['port']}, User={$config['user']}, Secure={$config['secure']}");
+        
         if (empty($config['host'])) {
+            error_log("WEC SMTP: No hay configuración SMTP - verificar settings o archivo .env");
             return; // No hay configuración SMTP
         }
         
+        // FORZAR configuración SMTP sobrescribiendo cualquier configuración previa
         $phpmailer->isSMTP();
         $phpmailer->Host = $config['host'];
         
         if (!empty($config['port'])) {
             $phpmailer->Port = intval($config['port']);
+        } else {
+            // Puerto por defecto según el tipo de seguridad
+            if ($config['secure'] === 'ssl') {
+                $phpmailer->Port = 465;
+            } elseif ($config['secure'] === 'tls') {
+                $phpmailer->Port = 587;
+            } else {
+                $phpmailer->Port = 25; // Sin cifrado
+            }
         }
         
+        // FORZAR autenticación
         if (!empty($config['user'])) {
             $phpmailer->SMTPAuth = true;
             $phpmailer->Username = $config['user'];
             $phpmailer->Password = $config['pass'] ?? '';
+        } else {
+            $phpmailer->SMTPAuth = false;
         }
         
+        // FORZAR cifrado
         if (!empty($config['secure'])) {
-            $phpmailer->SMTPSecure = $config['secure'];
+            $secure_value = strtolower(trim($config['secure']));
+            
+            // Manejar valores que pueden venir del .env como "true"/"false"
+            if ($secure_value === 'true') {
+                $secure_value = 'tls'; // Default para puerto 587
+                error_log("WEC SMTP: Convertido 'true' a 'tls' para compatibilidad con puerto {$phpmailer->Port}");
+            } elseif ($secure_value === 'false') {
+                $secure_value = ''; // Sin cifrado
+            }
+            
+            if ($secure_value === 'tls') {
+                $phpmailer->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+                error_log("WEC SMTP: Usando STARTTLS");
+            } elseif ($secure_value === 'ssl') {
+                $phpmailer->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
+                error_log("WEC SMTP: Usando SSL/TLS");
+            } else {
+                error_log("WEC SMTP: Sin cifrado configurado");
+            }
         }
         
-        if (!empty($config['from'])) {
-            $phpmailer->setFrom($config['from'], $config['from_name'] ?? '');
+        // FORZAR configuración From sobrescribiendo completamente
+        if (!empty($config['from']) && is_email($config['from'])) {
+            try {
+                // Limpiar configuraciones FROM previas
+                $phpmailer->clearAllRecipients();
+                $phpmailer->clearReplyTos();
+                
+                // Establecer FROM de forma forzosa
+                $phpmailer->setFrom($config['from'], $config['from_name'] ?? get_bloginfo('name'), false);
+                
+                // Asegurar que no sea sobrescrito
+                $phpmailer->From = $config['from'];
+                $phpmailer->FromName = $config['from_name'] ?? get_bloginfo('name');
+                
+                error_log("WEC SMTP: FROM forzado a: {$config['from_name']} <{$config['from']}>");
+            } catch (Exception $e) {
+                error_log("WEC SMTP: Error configurando From: " . $e->getMessage());
+                // Intentar sin validación
+                $phpmailer->From = $config['from'];
+                $phpmailer->FromName = $config['from_name'] ?? get_bloginfo('name');
+            }
         }
         
         // Configuración adicional para mejor compatibilidad
@@ -534,10 +592,40 @@ FROM_EMAIL=noreply@tudominio.com
         $phpmailer->Timeout = 30;
         $phpmailer->SMTPTimeout = 30;
         
+        // Opciones adicionales para mejor compatibilidad (especialmente XAMPP)
+        $phpmailer->SMTPOptions = array(
+            'ssl' => array(
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+                'allow_self_signed' => true,
+                'cafile' => '', // Evitar problemas de certificados
+                'capath' => '',
+                'ciphers' => 'HIGH:!SSLv2:!SSLv3', // Cifrados seguros
+                'disable_compression' => true
+            ),
+            'tls' => array(
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+                'allow_self_signed' => true
+            )
+        );
+        
+        // Configuración adicional específica para XAMPP
+        if (strpos(strtolower($_SERVER['SERVER_SOFTWARE'] ?? ''), 'apache') !== false) {
+            error_log("WEC SMTP: Detectado Apache (probablemente XAMPP) - aplicando configuración específica");
+            $phpmailer->SMTPAutoTLS = false; // Deshabilitar auto-TLS que puede causar problemas
+            $phpmailer->SMTPKeepAlive = false; // No mantener conexión activa
+        }
+        
         // Debug en desarrollo (solo si WP_DEBUG está activo)
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            $phpmailer->SMTPDebug = 0; // Cambiar a 1 o 2 para debug completo
+            $phpmailer->SMTPDebug = 3; // Debug COMPLETO
+            $phpmailer->Debugoutput = function($str, $level) {
+                error_log("WEC SMTP Debug: " . trim($str));
+            };
         }
+        
+        error_log("WEC SMTP: Configuración aplicada exitosamente (SOBRESCRIBIENDO otros plugins)");
     }
     
     /**
@@ -604,9 +692,33 @@ FROM_EMAIL=noreply@tudominio.com
                 'reset_links'   => true     // Aplicar todas las correcciones
             ]);
             
-            // Enviar email
+            // Log antes del envío (corregido)
+            $smtp_config = $this->get_current_smtp_config();
+            error_log("WEC SMTP: Intentando enviar email de prueba a {$to} usando host {$smtp_config['host']} puerto {$smtp_config['port']} usuario {$smtp_config['user']} cifrado {$smtp_config['secure']}");
+            
+            // Forzar debug de PHPMailer
+            add_action('phpmailer_init', function($phpmailer) {
+                $phpmailer->SMTPDebug = 3;
+                $phpmailer->Debugoutput = function($str, $level) {
+                    error_log('PHPMailer SMTP Debug: ' . trim($str));
+                };
+            }, 100);
+            
+            // Enviar email con captura de errores
             $headers = ['Content-Type: text/html; charset=UTF-8'];
+            
+            // Verificar que PHPMailer esté disponible
+            if (!class_exists('PHPMailer\\PHPMailer\\PHPMailer')) {
+                error_log("WEC SMTP: PHPMailer no está disponible");
+                throw new Exception("PHPMailer no está disponible");
+            }
+            
             $ok = wp_mail($to, $subject, $html_content, $headers);
+            error_log("WEC SMTP: Resultado de wp_mail = " . var_export($ok, true));
+            global $phpmailer;
+            if (isset($phpmailer) && !empty($phpmailer->ErrorInfo)) {
+                error_log('PHPMailer ErrorInfo: ' . $phpmailer->ErrorInfo);
+            }
             
             // Determinar resultado y crear nonce específico para ese resultado
             $test_result = $ok ? 'ok' : 'fail';
@@ -1408,6 +1520,41 @@ FROM_EMAIL=noreply@tudominio.com
             'template_method_exists' => class_exists('WEC_Template_Manager') && 
                                        method_exists(WEC_Template_Manager::class, 'render_template_content'),
         ];
+    }
+    
+    /**
+     * Fuerza la configuración FROM para sobrescribir otros plugins SMTP
+     * @param array $args Argumentos de wp_mail
+     * @return array Argumentos modificados
+     */
+    public function force_from_configuration($args) {
+        $config = $this->get_current_smtp_config();
+        
+        // Solo forzar si tenemos configuración FROM válida
+        if (!empty($config['from']) && is_email($config['from'])) {
+            // Forzar headers FROM
+            if (!isset($args['headers'])) {
+                $args['headers'] = [];
+            }
+            
+            if (!is_array($args['headers'])) {
+                $args['headers'] = explode("\n", $args['headers']);
+            }
+            
+            // Remover headers FROM existentes
+            $args['headers'] = array_filter($args['headers'], function($header) {
+                return stripos($header, 'from:') !== 0;
+            });
+            
+            // Agregar nuestro header FROM
+            $from_name = !empty($config['from_name']) ? $config['from_name'] : get_bloginfo('name');
+            $args['headers'][] = 'From: ' . $from_name . ' <' . $config['from'] . '>';
+            
+            // Log para debugging
+            error_log("WEC SMTP: Forzando FROM: {$from_name} <{$config['from']}>");
+        }
+        
+        return $args;
     }
 }
 
