@@ -1534,13 +1534,26 @@ function wec_install_tables() {
             PRIMARY KEY (id),
             UNIQUE KEY uniq_email (email)
         ) {$charset}");
-        
         if ($result === false) {
             // Si falla la creación, continuar sin mostrar error en producción
             // La tabla se creará en un intento posterior
         }
+    } else {
+        // Si la tabla existe, verificar que el índice único exista y no esté duplicado
+        $indexes = $wpdb->get_results("SHOW INDEX FROM {$table_subs} WHERE Column_name = 'email'");
+        $unique_exists = false;
+        foreach ($indexes as $idx) {
+            if ($idx->Non_unique == 0) {
+                $unique_exists = true;
+                break;
+            }
+        }
+        if (!$unique_exists) {
+            // Si no existe un índice único, crearlo
+            $wpdb->query("ALTER TABLE {$table_subs} ADD UNIQUE KEY uniq_email (email)");
+        }
     }
-    // Si la tabla existe, NO TOCAR NADA para evitar problemas de índices
+    // Si la tabla existe, NO TOCAR NADA más para evitar problemas de índices
     
     // Ejecutar las otras tablas sin output
     @dbDelta($sql1);
@@ -1567,6 +1580,34 @@ register_deactivation_hook(__FILE__, function() {
 
 /*** Función alternativa para casos problemáticos - USAR CON CUIDADO ***/
 function wec_force_recreate_subscribers_table() {
+/**
+ * Función de reparación para limpiar índices duplicados en la tabla de suscriptores.
+ * Elimina todos los índices en 'email' excepto uno único.
+ * Puede ejecutarse manualmente desde WP-CLI o añadiendo un botón temporal en el admin.
+ */
+function wec_repair_subscribers_indexes() {
+    global $wpdb;
+    $table_subs = $wpdb->prefix . 'wec_subscribers';
+    $indexes = $wpdb->get_results("SHOW INDEX FROM {$table_subs} WHERE Column_name = 'email'");
+    $unique_found = false;
+    $to_drop = [];
+    foreach ($indexes as $idx) {
+        // Si ya hay un índice único, marcar los demás para eliminar
+        if ($idx->Non_unique == 0 && !$unique_found) {
+            $unique_found = true;
+        } else {
+            $to_drop[] = $idx->Key_name;
+        }
+    }
+    // Eliminar los índices sobrantes
+    foreach ($to_drop as $key_name) {
+        $wpdb->query("ALTER TABLE {$table_subs} DROP INDEX `{$key_name}`");
+    }
+    // Si no había ningún índice único, crear uno
+    if (!$unique_found) {
+        $wpdb->query("ALTER TABLE {$table_subs} ADD UNIQUE KEY uniq_email (email)");
+    }
+}
     global $wpdb;
     $charset = $wpdb->get_charset_collate();
     $table_subs = $wpdb->prefix . 'wec_subscribers';
