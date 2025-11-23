@@ -1,6 +1,23 @@
 # Changelog - WP Email Collector
 
+
 Todos los cambios importantes del proyecto serán documentados en este archivo.
+
+## [7.1.0] - 2025-11-23 - Independencia SMTP y Fix Índices BD
+
+### 🛠️ Mejoras principales
+- **SMTP independiente**: La configuración SMTP del plugin ahora es completamente independiente y no depende de la configuración de otros plugins SMTP instalados. Se fuerza la prioridad de los hooks y la inicialización para evitar conflictos y garantizar que los envíos usen siempre la configuración propia de Email Collector.
+- **Fix de índices en base de datos**: Se resolvió el problema de índices duplicados o ausentes en la columna `email` de la tabla de suscriptores. Ahora el sistema detecta, repara y asegura que solo exista un índice único sobre el email, evitando errores de duplicidad y mejorando la integridad de los datos.
+
+### 🐛 Correcciones
+- Corrección de conflictos SMTP con otros plugins.
+- Reparación automática de índices únicos en la base de datos de suscriptores.
+
+### 🔧 Notas técnicas
+- Se refactorizó la inicialización de PHPMailer para sobrescribir cualquier otro handler SMTP.
+- Se añadió función de reparación de índices (`wec_repair_subscribers_indexes`) y verificación en la instalación/upgrade.
+
+---
 
 ## [7.0.0] - 2025-11-16 - Refactorización Campaign Manager
 

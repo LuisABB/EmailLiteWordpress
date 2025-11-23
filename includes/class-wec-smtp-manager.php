@@ -9,7 +9,7 @@
  * - Envío de emails de prueba
  * - Renderizado seguro de plantillas con fallback
  * 
- * @since 6.0.0
+ * @since 7.1.0
  * @requires PHP 7.4+ (WordPress minimum requirement)
  * @requires WordPress 5.0+
  * 
@@ -564,7 +564,7 @@ FROM_EMAIL=noreply@tudominio.com
         if (!empty($config['from']) && is_email($config['from'])) {
             try {
                 // Limpiar configuraciones FROM previas
-                $phpmailer->clearAllRecipients();
+                // $phpmailer->clearAllRecipients(); // No borrar destinatarios, esto causa error
                 $phpmailer->clearReplyTos();
                 
                 // Establecer FROM de forma forzosa
@@ -706,13 +706,6 @@ FROM_EMAIL=noreply@tudominio.com
             
             // Enviar email con captura de errores
             $headers = ['Content-Type: text/html; charset=UTF-8'];
-            
-            // Verificar que PHPMailer esté disponible
-            if (!class_exists('PHPMailer\\PHPMailer\\PHPMailer')) {
-                error_log("WEC SMTP: PHPMailer no está disponible");
-                throw new Exception("PHPMailer no está disponible");
-            }
-            
             $ok = wp_mail($to, $subject, $html_content, $headers);
             error_log("WEC SMTP: Resultado de wp_mail = " . var_export($ok, true));
             global $phpmailer;
