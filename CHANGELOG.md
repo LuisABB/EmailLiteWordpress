@@ -11,20 +11,16 @@ Todos los cambios importantes del proyecto serán documentados en este archivo.
 - **Changelog actualizado**: Documentación de la transición a dependencia exclusiva de WP Mail SMTP para el envío de correos.
 
 ### 🐛 Correcciones
+- Corrección de conflictos SMTP con otros plugins.
+- Reparación automática de índices únicos en la base de datos de suscriptores.
 - Eliminados errores fatales por métodos huérfanos tras la limpieza de SMTP.
 - Validación de sintaxis y funcionamiento tras la refactorización.
 
 ### 🔧 Notas técnicas
-- El plugin ya no contiene lógica SMTP propia ni dependencias de .env.
-- El formulario de prueba solo permite seleccionar plantilla y destinatario.
-
-### 🐛 Correcciones
-- Corrección de conflictos SMTP con otros plugins.
-- Reparación automática de índices únicos en la base de datos de suscriptores.
-
-### 🔧 Notas técnicas
 - Se refactorizó la inicialización de PHPMailer para sobrescribir cualquier otro handler SMTP.
 - Se añadió función de reparación de índices (`wec_repair_subscribers_indexes`) y verificación en la instalación/upgrade.
+- El plugin ya no contiene lógica SMTP propia ni dependencias de .env.
+- El formulario de prueba solo permite seleccionar plantilla y destinatario.
 
 ---
 
