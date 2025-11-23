@@ -1,6 +1,28 @@
 # Changelog - WP Email Collector
 
+
 Todos los cambios importantes del proyecto serán documentados en este archivo.
+
+## [7.1.0] - 2025-11-23 - Limpieza y optimización SMTP
+
+### 🛠️ Mejoras principales
+- **Eliminación total de lógica SMTP propia**: Se eliminó todo el código, UI y lógica de configuración SMTP y .env del plugin. Ahora el envío SMTP depende exclusivamente de WP Mail SMTP u otros plugins externos.
+- **Refactorización y limpieza**: El código del gestor de plantillas y pruebas de envío fue optimizado, eliminando parámetros, hooks y métodos obsoletos. Solo permanece la gestión de plantillas y el formulario de prueba.
+- **Changelog actualizado**: Documentación de la transición a dependencia exclusiva de WP Mail SMTP para el envío de correos.
+
+### 🐛 Correcciones
+- Corrección de conflictos SMTP con otros plugins.
+- Reparación automática de índices únicos en la base de datos de suscriptores.
+- Eliminados errores fatales por métodos huérfanos tras la limpieza de SMTP.
+- Validación de sintaxis y funcionamiento tras la refactorización.
+
+### 🔧 Notas técnicas
+- Se refactorizó la inicialización de PHPMailer para sobrescribir cualquier otro handler SMTP.
+- Se añadió función de reparación de índices (`wec_repair_subscribers_indexes`) y verificación en la instalación/upgrade.
+- El plugin ya no contiene lógica SMTP propia ni dependencias de .env.
+- El formulario de prueba solo permite seleccionar plantilla y destinatario.
+
+---
 
 ## [7.0.0] - 2025-11-16 - Refactorización Campaign Manager
 
