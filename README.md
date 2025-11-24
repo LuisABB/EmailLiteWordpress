@@ -1,8 +1,6 @@
 # WP Email Collector
 
-**WP Email Collector** es un plugin de WordPress para gestionar **plantillas de email**, crear **campañas** (con cola y lotes por minuto), **vista previa** responsive y **SMTP** configurable (con soporte para `.env`).
-
-> ⚠️ WordPress.org parsea `readme.txt`. Este `README.md` es útil para GitHub o documentación interna.
+**WP Email Collector** es un plugin de WordPress para gestionar **plantillas de email**, crear **campañas** (con cola y lotes por minuto), **vista previa** responsive y limpieza de correos falsos. Es compatible con plugins SMTP como WP Mail SMTP, pero no incluye configuración SMTP.
 
 ---
 
@@ -17,8 +15,6 @@ El plugin está organizado en **managers especializados** para máxima mantenibi
 - Estados de campaña y monitoreo
 
 ### 📤 **WEC_SMTP_Manager**
-- Configuración SMTP avanzada
-- Soporte para archivos `.env`
 - Envío de emails de prueba
 - Fallbacks robustos
 
@@ -28,6 +24,12 @@ El plugin está organizado en **managers especializados** para máxima mantenibi
 - Sistema de variables dinámicas
 - Validación de contenido
 
+### 🧹 **Limpieza de Correos Falsos**
+- Validación y limpieza de emails inválidos o falsos
+- Integración con la API de EmailListVerify
+- Panel de administración para gestionar y limpiar correos
+- Consulta el archivo `EMAIL_CLEANER_SETUP.md` para instrucciones de configuración
+
 ### 🔧 **WEC_Email_Collector** (Core)
 - Orquestación de managers
 - Autoloader de clases
@@ -35,6 +37,7 @@ El plugin está organizado en **managers especializados** para máxima mantenibi
 - Configuración global
 
 ---
+
 
 ## Características principales
 
@@ -45,7 +48,11 @@ El plugin está organizado en **managers especializados** para máxima mantenibi
   - Pegado manual de correos (uno por línea).
 - **Cola de envío** con “Lote por minuto” (`rate_per_minute`).
 - **Envío mediante WP-Cron o cron real**.
-- **Configuración SMTP** interna o mediante `.env` externo.
+- **Compatible con plugins SMTP** (como WP Mail SMTP).
+- **Limpieza de correos falsos o inválidos**:
+  - Validación avanzada mediante la API de EmailListVerify
+  - Panel de administración para gestionar y limpiar correos
+  - Consulta el archivo `EMAIL_CLEANER_SETUP.md` para instrucciones
 - **Sistema de suscripciones / desuscripciones automáticas:**
   - Tabla `wp_wec_subscribers`
   - Cada correo incluye `[[UNSUB_URL]]` (enlace único)
@@ -74,32 +81,7 @@ El plugin está organizado en **managers especializados** para máxima mantenibi
 
 ---
 
-## Configuración SMTP
 
-### Opción A. Panel del plugin
-
-En **Email Manager → Config. SMTP** rellena:
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`
-- `FROM_NAME`, `FROM_EMAIL`
-- `SMTP_USE_SSL` (`tls`, `ssl` o vacío)
-
-### Opción B. Archivo `.env` (prioritario)
-Ruta esperada:
-```
-/path/a/wordpress/programData/emailsWishList/.env
-```
-Ejemplo de contenido:
-```
-SMTP_HOST=smtp.tu-proveedor.com
-SMTP_PORT=587
-SMTP_USER=usuario
-SMTP_PASS=contraseña
-FROM_NAME=Relojes Curren México
-FROM_EMAIL=ventas@tudominio.com
-SMTP_USE_SSL=tls
-```
-
----
 
 ## Cron
 
@@ -148,4 +130,4 @@ php "C:\xampp\htdocs\tu-sitio\wp-cron.php"
 ## Licencia
 
 GPLv2 o posterior.  
-© Curren México
+© Drexora

@@ -2,11 +2,21 @@
 /**
  * Plugin Name: WP Email Collector
  * Description: Gestiona plantillas de email, campañas con cola y vista previa. Incluye SMTP, WP-Cron, Unsubscribe y CSS Inliner para vista previa/envíos.
- * Version:     7.1.0
+ * Version:     8.0.0
  * Author:      Drexora
  * License:     GPLv2 or later
  * Text Domain: wp-email-collector
  */
+
+// Al activar el plugin, agregar la columna last_checked_at si no existe
+register_activation_hook(__FILE__, function() {
+    global $wpdb;
+    $table = $wpdb->prefix . 'wec_subscribers';
+    $col = $wpdb->get_results("SHOW COLUMNS FROM $table LIKE 'last_checked_at'");
+    if (empty($col)) {
+        $wpdb->query("ALTER TABLE $table ADD COLUMN last_checked_at DATETIME NULL");
+    }
+});
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
@@ -23,6 +33,9 @@ spl_autoload_register(function($class_name) {
     }
     return false;
 });
+
+
+require_once plugin_dir_path(__FILE__) . 'includes/email-cleaner.php';
 
 if ( ! class_exists('WEC_Email_Collector') ) :
 
@@ -362,10 +375,23 @@ JS;
 
     /*** Admin UI ***/
     public function add_menu() {
-        add_menu_page( 'Email Manager','Email Manager','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ], 'dashicons-email', 26 );
-        add_submenu_page( 'wec-campaigns', 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
-        add_submenu_page( 'wec-campaigns', 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
-        add_submenu_page( 'wec-campaigns', 'Email Templates','Email Templates','manage_options', 'edit.php?post_type='.self::CPT_TPL );
+        // Asegura que la clase RCX_Email_Cleaner esté cargada
+        if (class_exists('RCX_Email_Cleaner')) {
+            RCX_Email_Cleaner::get_instance();
+            add_menu_page( 'Email Manager','Email Manager','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ], 'dashicons-email', 26 );
+            add_submenu_page( 'wec-campaigns', 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
+            add_submenu_page( 'wec-campaigns', 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
+            add_submenu_page( 'wec-campaigns', 'Email Templates','Email Templates','manage_options', 'edit.php?post_type='.self::CPT_TPL );
+            // Registrar el submenú de Limpieza Emails aquí
+            add_submenu_page(
+                'wec-campaigns',
+                'Limpieza de Correos',
+                'Limpieza Emails',
+                'manage_options',
+                RCX_Email_Cleaner::MENU_SLUG,
+                [RCX_Email_Cleaner::get_instance(), 'render_admin_page']
+            );
+        }
     }
 
     public function remove_duplicate_menu() {

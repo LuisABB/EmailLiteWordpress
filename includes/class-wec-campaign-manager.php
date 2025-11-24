@@ -9,7 +9,7 @@
  * - Estados y monitoreo
  * - Cron y programación
  * 
- * @since 7.0.0
+ * @since 8.0.0
  * @requires PHP 7.4+ (WordPress minimum requirement)
  * @requires WordPress 5.0+
  */
@@ -1201,45 +1201,10 @@ class WEC_Campaign_Manager {
      * Escanea todo el sitio en busca de emails
      */
     private function gather_emails_full_scan() {
-        $emails = [];
-        
-        // Obtener límites configurables para el escaneo
-        $user_limit = $this->get_users_scan_limit();
-        $comments_per_batch = $this->get_comments_per_batch();
-        
-        // Usuarios con límite configurable
-        $users = get_users(['fields' => ['user_email'], 'number' => $user_limit]);
-        foreach($users as $u) {
-            if (is_email($u->user_email)) {
-                $emails[] = strtolower($u->user_email);
-            }
-        }
-        
-        // Comentarios paginados con tamaño de lote configurable
-        $paged = 1;
-        $per = $comments_per_batch;
-        
-        do {
-            $cmts = get_comments([
-                'status' => 'approve',
-                'type' => 'comment',
-                'number' => $per,
-                'paged' => $paged,
-                'fields' => 'ids'
-            ]);
-            
-            if (!$cmts) break;
-            
-            foreach($cmts as $cid) {
-                $c = get_comment($cid);
-                if ($c && is_email($c->comment_author_email)) {
-                    $emails[] = strtolower($c->comment_author_email);
-                }
-            }
-            
-            $paged++;
-        } while (count($cmts) === $per);
-        
+        global $wpdb;
+        $table = $wpdb->prefix . self::DB_TABLE_SUBSCRIBERS;
+        $rows = $wpdb->get_col($wpdb->prepare("SELECT email FROM $table WHERE status = %s", 'subscribed'));
+        $emails = array_map('strtolower', $rows);
         return array_values(array_unique($emails));
     }
     
