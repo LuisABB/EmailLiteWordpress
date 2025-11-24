@@ -1,4 +1,3 @@
-
 <?php
 /**
  * Plugin Name: WP Email Collector
@@ -376,13 +375,23 @@ JS;
 
     /*** Admin UI ***/
     public function add_menu() {
-        add_menu_page( 'Email Manager','Email Manager','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ], 'dashicons-email', 26 );
-        add_submenu_page( 'wec-campaigns', 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
-        add_submenu_page( 'wec-campaigns', 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
-        add_submenu_page( 'wec-campaigns', 'Email Templates','Email Templates','manage_options', 'edit.php?post_type='.self::CPT_TPL );
-        add_submenu_page( 'wec-campaigns', 'Limpieza Emails', 'Limpieza Emails', 'manage_options', RCX_Email_Cleaner::MENU_SLUG, function() {
-            RCX_Email_Cleaner::get_instance()->render_admin_page();
-        });
+        // Asegura que la clase RCX_Email_Cleaner esté cargada
+        if (class_exists('RCX_Email_Cleaner')) {
+            RCX_Email_Cleaner::get_instance();
+            add_menu_page( 'Email Manager','Email Manager','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ], 'dashicons-email', 26 );
+            add_submenu_page( 'wec-campaigns', 'Campañas','Campañas','manage_options', 'wec-campaigns', [ $this, 'render_campaigns_page' ] );
+            add_submenu_page( 'wec-campaigns', 'Config. SMTP','Config. SMTP','manage_options', 'wec-smtp', [ $this, 'render_smtp_settings' ] );
+            add_submenu_page( 'wec-campaigns', 'Email Templates','Email Templates','manage_options', 'edit.php?post_type='.self::CPT_TPL );
+            // Registrar el submenú de Limpieza Emails aquí
+            add_submenu_page(
+                'wec-campaigns',
+                'Limpieza de Correos',
+                'Limpieza Emails',
+                'manage_options',
+                RCX_Email_Cleaner::MENU_SLUG,
+                [RCX_Email_Cleaner::get_instance(), 'render_admin_page']
+            );
+        }
     }
 
     public function remove_duplicate_menu() {

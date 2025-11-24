@@ -3,6 +3,24 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
+## [8.0.0] - 2025-11-23 - Limpieza Emails y Seguridad
+
+### ✨ Nuevas funcionalidades y cambios
+- **Menú Limpieza Emails**: El submenú "Limpieza Emails" ahora se registra correctamente en el panel de administración y muestra la interfaz de gestión de correos sin errores 404.
+- **Escaneo solo de suscriptores validados**: El modo "Usar escaneo de todo el sitio" ahora solo toma emails de la tabla `wp_wec_subscribers` donde `status = 'subscribed'`. Ya no se escanean usuarios ni comentarios.
+- **Seguridad API KEY**: La clave de la API de EmailListVerify se almacena cifrada en la base de datos y solo se descifra cuando es necesario.
+- **Mejoras de UI**: Los botones de validación se desactivan si falta la API KEY y se añadió un botón para configurar o cambiar la clave en cualquier momento.
+
+### 🐛 Correcciones
+- El botón "Validar TODOS" ahora solo valida correos con status vacío.
+
+### 🔒 Notas técnicas
+- El registro del submenú y su callback se realiza desde el archivo principal para mayor robustez.
+- Eliminada la lógica de escaneo de usuarios y comentarios en campañas masivas.
+- Refactorización de hooks y AJAX para mayor claridad y seguridad.
+
+---
+
 ## [7.1.0] - 2025-11-23 - Limpieza y optimización SMTP
 
 ### 🛠️ Mejoras principales
