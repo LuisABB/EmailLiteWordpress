@@ -1064,13 +1064,13 @@ class WEC_Campaign_Manager {
             http_response_code(403);
             header('Content-Type: text/plain; charset=UTF-8');
             echo "ERROR 403: Clave secreta incorrecta\n";
-            echo "Usa: ?wec_cron=true&secret=tu_clave_secreta\n";
-            exit;
-        }
-        
-        // Verificar secreto actual
-        $is_valid = hash_equals($expected_secret, $secret);
-        
+        $jobs_to_expire = $wpdb->get_results(
+            "SELECT id, start_at
+             FROM {$safe_table_jobs}
+             WHERE status = 'pending'
+               AND DATE(CONVERT_TZ(start_at, 'UTC', 'America/Mexico_City'))
+                   < DATE(CONVERT_TZ(UTC_TIMESTAMP(), 'UTC', 'America/Mexico_City'))"
+        );
         // Durante período de gracia, también aceptar secreto viejo con timing-safe comparison
         // NOTA: Ejecutamos ambas comparaciones independientemente del resultado para mantener
         // tiempo de ejecución constante y evitar timing attacks. El período de gracia permite
@@ -1143,6 +1143,9 @@ class WEC_Campaign_Manager {
      * Verifica si estamos en período de gracia de migración de secreto
      * @return bool True si aún estamos en el período de gracia
      */
+    // <-- Add missing closing brace for previous function or class block
+}
+
     private function is_in_migration_grace_period() {
         $migration_date = get_option('wec_cron_secret_migration_date');
         if (!$migration_date) {

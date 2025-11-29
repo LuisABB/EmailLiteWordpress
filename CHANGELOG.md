@@ -3,6 +3,23 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
+## [8.1.0] - 2025-11-29 - Expiración de campañas y limpieza de logs
+
+### ✨ Cambios principales
+- **Expiración de campañas solo si son de días anteriores (CDMX):**
+  - Ahora las campañas solo se marcan como expiradas si la fecha (en CDMX) es de un día anterior al actual, sin importar la hora programada.
+  - Se utiliza `DATE(CONVERT_TZ(...))` en las consultas MySQL para comparar correctamente la fecha local de CDMX contra la fecha actual.
+- **Conversión robusta de zonas horarias:**
+  - Todas las comparaciones de fechas y horas relevantes usan conversión explícita entre UTC y 'America/Mexico_City' para evitar expiraciones prematuras.
+- **Eliminación de logs de depuración:**
+  - Se eliminaron todas las llamadas a `error_log` y mensajes de depuración del código de producción para mayor limpieza y rendimiento.
+
+### 🐛 Correcciones
+- Las campañas ya no expiran antes de tiempo por diferencias de hora entre UTC y CDMX.
+- El código está libre de logs de depuración y listo para producción.
+
+---
+
 ## [8.0.0] - 2025-11-23 - Limpieza Emails y Seguridad
 
 ### ✨ Nuevas funcionalidades y cambios
