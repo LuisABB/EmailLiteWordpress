@@ -584,6 +584,7 @@ class WEC_Campaign_Manager {
                     <th><?php esc_html_e('Total', 'wp-email-collector'); ?></th>
                     <th><?php esc_html_e('Enviados', 'wp-email-collector'); ?></th>
                     <th><?php esc_html_e('Fallidos', 'wp-email-collector'); ?></th>
+                    <th><?php esc_html_e('Fin', 'wp-email-collector'); ?></th>
                     <th><?php esc_html_e('Acciones', 'wp-email-collector'); ?></th>
                 </tr>
             </thead>
@@ -597,6 +598,7 @@ class WEC_Campaign_Manager {
                     <td><?php echo intval($job->total); ?></td>
                     <td><?php echo intval($job->sent); ?></td>
                     <td><?php echo intval($job->failed); ?></td>
+                    <td><?php echo esc_html($this->format_display_datetime($job->finished_at)); ?></td>
                     <td class="wec-inline">
                         <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=wec-campaigns&edit_job=' . $job->id)); ?>">
                             <?php esc_html_e('Editar', 'wp-email-collector'); ?>
@@ -609,15 +611,40 @@ class WEC_Campaign_Manager {
                                 <?php esc_html_e('Eliminar', 'wp-email-collector'); ?>
                             </button>
                         </form>
+                        <?php if (in_array($job->status, ['expired','failed']) && !empty($job->log_error)): ?>
+                            <button class="button-log-error" data-log="<?php echo esc_attr($job->log_error); ?>">Ver motivo</button>
+                        <?php endif; ?>
                     </td>
                 </tr>
                 <?php endforeach; else: ?>
                 <tr>
-                    <td colspan="8"><?php esc_html_e('No hay campañas.', 'wp-email-collector'); ?></td>
+                    <td colspan="9"><?php esc_html_e('No hay campañas.', 'wp-email-collector'); ?></td>
                 </tr>
                 <?php endif; ?>
             </tbody>
         </table>
+        <div id="wec-log-modal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:center;">
+            <div style="background:#fff;padding:32px 24px;border-radius:8px;max-width:520px;margin:auto;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+                <h2 style="margin-top:0;color:#d94949;">❌ Motivo de fallo</h2>
+                <pre id="wec-log-content" style="white-space:pre-wrap;word-break:break-word;"></pre>
+                <button id="wec-close-log-modal" class="button" style="margin-top:12px;">Cerrar</button>
+            </div>
+        </div>
+        <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            var modal = document.getElementById('wec-log-modal');
+            var content = document.getElementById('wec-log-content');
+            document.querySelectorAll('.button-log-error').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    content.textContent = this.getAttribute('data-log');
+                    modal.style.display = 'flex';
+                });
+            });
+            document.getElementById('wec-close-log-modal').addEventListener('click', function() {
+                modal.style.display = 'none';
+            });
+        });
+        </script>
         <?php
     }
     
@@ -685,7 +712,11 @@ class WEC_Campaign_Manager {
         }
         
         // Crear campaña en base de datos
-        $job_id = $this->create_campaign_in_db($tpl_id, $start_at, $rate_per_min, $emails);
+    // Log de depuración para fechas
+    $start_at_log = $start_at;
+    $start_at_utc_log = $this->convert_local_to_mysql($start_at);
+    error_log("WEC: [CREATE] start_at recibido (CDMX): $start_at_log | convertido a UTC: $start_at_utc_log");
+    $job_id = $this->create_campaign_in_db($tpl_id, $start_at, $rate_per_min, $emails);
         
         if (!$job_id) {
             wp_die(__('Error al crear la campaña.', 'wp-email-collector'));
@@ -781,6 +812,7 @@ class WEC_Campaign_Manager {
      * Procesa la cola de envíos (función principal del cron)
      */
     public function process_queue_cron() {
+        error_log("WEC: [CRON] Iniciando process_queue_cron");
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
         $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
@@ -790,109 +822,125 @@ class WEC_Campaign_Manager {
         $safe_table_items = $this->escape_table_name($table_items);
         
         // PASO 1: Marcar como expiradas las campañas pendientes de días anteriores
-        $yesterday_end_cdmx = date('Y-m-d 23:59:59', strtotime('-1 day'));
-        $yesterday_end_utc = $this->convert_local_to_mysql($yesterday_end_cdmx);
-        
-        $expired_count = $wpdb->query($wpdb->prepare(
-            "UPDATE {$safe_table_jobs} 
-             SET status = 'expired' 
-             WHERE status = 'pending' 
-             AND start_at <= %s", 
-            $yesterday_end_utc
-        ));
+        // Calcular el inicio del día actual en CDMX y convertirlo a UTC
+        // Expirar campañas: comparar en CDMX usando CONVERT_TZ
+        // PASO 1: Expirar solo campañas pendientes de DÍAS ANTERIORES (no por hora)
+        $jobs_to_expire = $wpdb->get_results(
+            "SELECT id, start_at
+             FROM {$safe_table_jobs}
+             WHERE status = 'pending'
+               AND DATE(CONVERT_TZ(start_at, 'UTC', 'America/Mexico_City'))
+                   < DATE(CONVERT_TZ(UTC_TIMESTAMP(), 'UTC', 'America/Mexico_City'))"
+        );
+        error_log("WEC: [CRON] Jobs a expirar encontrados: " . count($jobs_to_expire));
+        foreach ($jobs_to_expire as $job_row) {
+            error_log("WEC: [DEBUG] Job a expirar: id={$job_row->id}, start_at={$job_row->start_at}");
+        }
+        $expired_count = 0;
+        foreach ($jobs_to_expire as $job_row) {
+            error_log("WEC: [CRON] Expirando job_id: {$job_row->id}");
+            // Buscar todos los errores únicos de los items de la campaña
+            $errors = $wpdb->get_col($wpdb->prepare(
+                "SELECT DISTINCT error FROM {$safe_table_items} WHERE job_id = %d AND error IS NOT NULL AND error != ''",
+                $job_row->id
+            ));
+            if ($errors && count($errors) > 0) {
+                $error_msg = __('Expirada. Errores detectados: ', 'wp-email-collector') . implode(' | ', $errors);
+            } else {
+                $error_msg = __('Expirada por tiempo (no se detectaron errores individuales en los envíos)', 'wp-email-collector');
+            }
+            // Guardar la hora real de finalización en CDMX (convertida a UTC para la base de datos)
+            $now_cdmx = new DateTime('now', new DateTimeZone('America/Mexico_City'));
+            $now_cdmx->setTimezone(new DateTimeZone('UTC'));
+            $finished_at_utc = $now_cdmx->format('Y-m-d H:i:s');
+            error_log("WEC: [CRON] Campaña expirada ID {$job_row->id} - Motivo: {$error_msg} - Fin: {$finished_at_utc} (hora real de CDMX convertida a UTC)");
+            $updated = $wpdb->update(
+                $table_jobs,
+                [ 'status' => 'expired', 'log_error' => $error_msg, 'finished_at' => $finished_at_utc ],
+                [ 'id' => $job_row->id ],
+                [ '%s', '%s', '%s' ],
+                [ '%d' ]
+            );
+            if ($updated) $expired_count++;
+        }
         
         if ($expired_count > 0) {
-            error_log("WEC: Se marcaron {$expired_count} campañas como expiradas (de días anteriores)");
+            error_log("WEC: [CRON] Se marcaron {$expired_count} campañas como expiradas (de días anteriores)");
         }
-        
-        // LIMPIEZA: Eliminar campañas expiradas muy antiguas (más de 30 días)
-        $cleanup_date = date('Y-m-d 23:59:59', strtotime('-30 days'));
-        $cleanup_date_utc = $this->convert_local_to_mysql($cleanup_date);
-        
-        $cleanup_count = $wpdb->query($wpdb->prepare(
-            "DELETE j, i FROM {$safe_table_jobs} j 
-             LEFT JOIN {$safe_table_items} i ON j.id = i.job_id 
-             WHERE j.status = 'expired' 
-             AND j.start_at <= %s", 
-            $cleanup_date_utc
-        ));
-        
-        if ($cleanup_count > 0) {
-            error_log("WEC: Se eliminaron {$cleanup_count} campañas expiradas antiguas (>30 días)");
-        }
-        
-        // PASO 2: Obtener campaña pendiente cuya hora haya llegado HOY específicamente
+        error_log("WEC: [CRON] Terminó revisión de expiradas. Buscando job pendiente/running para hoy...");
         $current_time_utc = $this->get_current_time_cdmx();
+    error_log("WEC: [DEBUG] current_time_utc (get_current_time_cdmx): $current_time_utc");
+    $today_start_cdmx = date('Y-m-d 00:00:00');
+    $today_end_cdmx = date('Y-m-d 23:59:59');
+    error_log("WEC: [DEBUG] today_start_cdmx: $today_start_cdmx | today_end_cdmx: $today_end_cdmx");
+    $today_start_utc = $this->convert_local_to_mysql($today_start_cdmx);
+    $today_end_utc = $this->convert_local_to_mysql($today_end_cdmx);
+    error_log("WEC: [DEBUG] today_start_utc: $today_start_utc | today_end_utc: $today_end_utc");
         
         $today_start_cdmx = date('Y-m-d 00:00:00');
         $today_end_cdmx = date('Y-m-d 23:59:59');
         $today_start_utc = $this->convert_local_to_mysql($today_start_cdmx);
         $today_end_utc = $this->convert_local_to_mysql($today_end_cdmx);
         
-        $job = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$safe_table_jobs} 
-             WHERE status IN('pending','running') 
-             AND start_at <= %s 
-             AND start_at >= %s 
-             AND start_at <= %s
-             ORDER BY id ASC LIMIT 1", 
-            $current_time_utc, 
-            $today_start_utc,
-            $today_end_utc
-        ));
+                // Ejecutar campañas: comparar en CDMX usando CONVERT_TZ
+    $job = $wpdb->get_row(
+        "SELECT * FROM {$safe_table_jobs} 
+         WHERE status IN('pending','running') 
+         AND CONVERT_TZ(start_at, 'UTC', 'America/Mexico_City') <= CONVERT_TZ(UTC_TIMESTAMP(), 'UTC', 'America/Mexico_City')
+         ORDER BY id ASC LIMIT 1"
+    );
         
-        if (!$job) {
-            return;
+        if ($job) {
+            error_log("WEC: [DEBUG] Job seleccionado para procesar: id={$job->id}, start_at={$job->start_at}, status={$job->status}");
+            error_log("WEC: [CRON] Job encontrado para procesar: ID {$job->id}, status: {$job->status}, start_at: {$job->start_at}, rate_per_minute: {$job->rate_per_minute}");
+        } else {
+            error_log("WEC: [CRON] No hay job pendiente/running para procesar hoy.");
         }
-        
-        if ($job->status === 'pending') {
+        if ($job && $job->status === 'pending') {
             $wpdb->update($table_jobs, ['status' => 'running'], ['id' => $job->id], ['%s'], ['%d']);
+            error_log("WEC: [CRON] Job ID {$job->id} cambiado a status 'running'");
         }
-        
-        $limit = max(1, intval($job->rate_per_minute ?: 100));
-        
-        // Procesar por lote
-        $batch = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM {$safe_table_items} WHERE job_id=%d AND status='queued' LIMIT %d", 
-            $job->id, $limit
-        ));
-        
-        if (!$batch) {
-            // Sin pendientes -> finalizar
-            $wpdb->update($table_jobs, ['status' => 'done'], ['id' => $job->id], ['%s'], ['%d']);
-            return;
-        }
-        
-        // Procesar el lote
-        $this->process_email_batch($job, $batch);
-        
-        // Programar siguiente ejecución si hay más trabajo pendiente
-        $pending_count = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$safe_table_items} WHERE job_id=%d AND status='queued'", 
-            $job->id
-        ));
-        
-        if ($pending_count > 0) {
-            wp_schedule_single_event(time() + 60, self::CRON_HOOK);
-        }
-        
-        // Verificar si hay otros trabajos pendientes para procesar
-        $next_job = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$safe_table_jobs} 
-             WHERE status IN('pending','running') 
-             AND start_at <= %s 
-             AND start_at >= %s 
-             AND start_at <= %s
-             AND id != %d 
-             ORDER BY id ASC LIMIT 1", 
-            $current_time_utc, 
-            $today_start_utc,
-            $today_end_utc,
-            $job->id 
-        ));
-        
-        if ($next_job) {
-            wp_schedule_single_event(time() + 30, self::CRON_HOOK);
+        if ($job) {
+            $limit = max(1, intval($job->rate_per_minute ?: 100));
+            error_log("WEC: [CRON] Preparando batch para job {$job->id} con límite: $limit");
+            $batch = $wpdb->get_results($wpdb->prepare(
+                "SELECT * FROM {$safe_table_items} WHERE job_id=%d AND status='queued' LIMIT %d", 
+                $job->id, $limit
+            ));
+            error_log("WEC: [CRON] Batch obtenido para job {$job->id}: " . count($batch) . " items");
+            if (!$batch) {
+                // Sin pendientes -> finalizar
+                $wpdb->update($table_jobs, [
+                    'status' => 'done',
+                    'finished_at' => current_time('mysql')
+                ], ['id' => $job->id], ['%s', '%s'], ['%d']);
+                error_log("WEC: [CRON] Job ID {$job->id} finalizado (sin pendientes). Status cambiado a 'done'.");
+                return;
+            }
+            // Procesar el lote
+            error_log("WEC: [CRON] Llamando a process_email_batch para job {$job->id}");
+            $this->process_email_batch($job, $batch);
+            // Programar siguiente ejecución si hay más trabajo pendiente
+            $pending_count = (int) $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM {$safe_table_items} WHERE job_id=%d AND status='queued'", 
+                $job->id
+            ));
+            
+            if ($pending_count > 0) {
+                wp_schedule_single_event(time() + 60, self::CRON_HOOK);
+            }
+            
+            // Verificar si hay otros trabajos pendientes para procesar
+            $next_job = $wpdb->get_row(
+                "SELECT * FROM {$safe_table_jobs} 
+                 WHERE status IN('pending','running') 
+                 AND CONVERT_TZ(start_at, 'UTC', 'America/Mexico_City') <= CONVERT_TZ(UTC_TIMESTAMP(), 'UTC', 'America/Mexico_City')
+                 AND id != {$job->id} 
+                 ORDER BY id ASC LIMIT 1"
+            );
+            if ($next_job) {
+                wp_schedule_single_event(time() + 30, self::CRON_HOOK);
+            }
         }
     }
     
@@ -900,6 +948,10 @@ class WEC_Campaign_Manager {
      * Procesa un lote de emails para envío
      */
     private function process_email_batch($job, $batch) {
+        error_log("WEC: [BATCH] Iniciando process_email_batch para job {$job->id} con " . count($batch) . " items");
+        // Guardar el id de la campaña actual para logging de errores
+        $this->current_job_id = $job->id;
+        
         // Renderizar plantilla una sola vez
         $template_result = $this->render_template_content($job->tpl_id);
         
@@ -908,8 +960,13 @@ class WEC_Campaign_Manager {
             global $wpdb;
             $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
             $safe_table_jobs = $this->escape_table_name($table_jobs);
-            $wpdb->update($table_jobs, ['status' => 'failed'], ['id' => $job->id], ['%s'], ['%d']);
-            error_log("WEC: Error al renderizar plantilla {$job->tpl_id} para job {$job->id}: " . $template_result->get_error_message());
+            $wpdb->update($table_jobs, [
+                'status' => 'failed',
+                'log_error' => $template_result->get_error_message(),
+                'finished_at' => current_time('mysql')
+            ], ['id' => $job->id], ['%s', '%s', '%s'], ['%d']);
+            error_log("WEC: [BATCH] Error al renderizar plantilla {$job->tpl_id} para job {$job->id}: " . $template_result->get_error_message());
+            error_log("WEC: [BATCH] Job ID {$job->id} marcado como failed por error de plantilla.");
             return;
         }
         
@@ -920,9 +977,11 @@ class WEC_Campaign_Manager {
         $failed = 0;
         
         foreach ($batch as $item) {
+            error_log("WEC: [BATCH] Procesando item ID {$item->id}, email: {$item->email}, status: {$item->status}, attempts: {$item->attempts}");
             if ($this->is_unsubscribed($item->email)) {
                 $this->mark_item_failed($item->id, $item->attempts, 'unsubscribed');
                 $failed++;
+                error_log("WEC: [BATCH] Item ID {$item->id} marcado como failed (unsubscribed)");
                 continue;
             }
             
@@ -954,14 +1013,20 @@ class WEC_Campaign_Manager {
             if ($ok) {
                 $this->mark_item_sent($item->id, $item->attempts);
                 $sent++;
+                error_log("WEC: [BATCH] Item ID {$item->id} enviado correctamente");
             } else {
                 $this->mark_item_failed($item->id, $item->attempts, 'wp_mail false');
                 $failed++;
+                error_log("WEC: [BATCH] Item ID {$item->id} falló al enviar (wp_mail false)");
             }
         }
         
         // Actualizar totales
         $this->update_job_stats($job->id, $sent, $failed);
+        error_log("WEC: [BATCH] Job {$job->id} - enviados: $sent, fallidos: $failed");
+        
+        // Limpiar el id de la campaña actual
+        unset($this->current_job_id);
     }
     
     /**
@@ -1467,6 +1532,7 @@ class WEC_Campaign_Manager {
      * Crea campaña en base de datos
      */
     private function create_campaign_in_db($tpl_id, $start_at, $rate_per_min, $emails) {
+        error_log("WEC: Creando campaña - tpl_id: $tpl_id, start_at: $start_at, rate_per_min: $rate_per_min, total_emails: " . count($emails));
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
         $table_items = $wpdb->prefix . self::DB_TABLE_ITEMS;
@@ -1537,6 +1603,11 @@ class WEC_Campaign_Manager {
             ['id' => $item_id], 
             ['%s', '%d', '%s'], ['%d']
         );
+        // Guardar el error en la campaña (job) si hay error y job_id disponible
+        if (!empty($error) && isset($this->current_job_id)) {
+            $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
+            $wpdb->update($table_jobs, [ 'log_error' => $error ], [ 'id' => $this->current_job_id ], [ '%s' ], [ '%d' ]);
+        }
     }
     
     /**
