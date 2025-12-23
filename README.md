@@ -4,15 +4,23 @@
 
 ---
 
-## Arquitectura del Plugin (v7.0+)
+## Arquitectura del Plugin (v9.0+)
 
 El plugin está organizado en **managers especializados** para máxima mantenibilidad:
 
 ### 📧 **WEC_Campaign_Manager**
 - Gestión completa de campañas
 - Procesamiento de cola y envíos masivos
+- Segmentación por categorías
 - Cron interno y externo
 - Estados de campaña y monitoreo
+
+### 🏷️ **WEC_Category_Manager** ✨ NUEVO en v9.0
+- Sistema de categorías de suscriptores
+- Segmentación para campañas específicas
+- Gestión visual con color picker
+- Asignación múltiple de categorías
+- Consulta el archivo `CATEGORIES_SETUP.md` para guía completa
 
 ### 📤 **WEC_SMTP_Manager**
 - Envío de emails de prueba
@@ -43,9 +51,14 @@ El plugin está organizado en **managers especializados** para máxima mantenibi
 
 - **Email Templates** (`wec_email_tpl`) para diseñar HTML personalizados.
 - **Vista previa responsive** (Móvil / Tablet / Desktop / Ancho libre).
+- **Sistema de Categorías** ✨ NUEVO en v9.0:
+  - Segmenta suscriptores en categorías personalizadas (Ofertas, Proveedores, etc.)
+  - Campañas específicas por categoría o múltiples categorías
+  - Gestión visual con colores y estadísticas
+  - Consulta `CATEGORIES_SETUP.md` para guía completa
 - **Campañas automáticas** con dos modos:
-  - Escaneo del sitio (usuarios y comentarios aprobados).
-  - Pegado manual de correos (uno por línea).
+  - Escaneo de suscriptores (filtrado por categorías opcional)
+  - Pegado manual de correos (uno por línea)
 - **Cola de envío** con “Lote por minuto” (`rate_per_minute`).
 - **Envío mediante WP-Cron o cron real**.
 - **Compatible con plugins SMTP** (como WP Mail SMTP).
@@ -74,10 +87,14 @@ El plugin está organizado en **managers especializados** para máxima mantenibi
 1. Copia la carpeta del plugin en  
    `wp-content/plugins/wp-email-collector/`
 2. Activa el plugin en **Plugins → Activar**.
-3. Crea una plantilla desde  
+3. **(Opcional) Configura categorías** desde  
+   **Email Manager → Categorías**.
+4. Crea una plantilla desde  
    **Email Manager → Email Templates**.
-4. Crea una campaña desde  
+5. Crea una campaña desde  
    **Email Manager → Campañas**.
+
+**Nota**: Al activar el plugin se crean automáticamente 3 categorías predeterminadas: General, Ofertas y Proveedores.
 
 ---
 
@@ -113,17 +130,26 @@ php "C:\xampp\htdocs\tu-sitio\wp-cron.php"
 
 | Tabla | Descripción |
 |-------|--------------|
-| `wp_wec_jobs` | Información general de campañas |
+| `wp_wec_jobs` | Información general de campañas (incluye `category_ids`) |
 | `wp_wec_job_items` | Correos individuales de cada campaña |
 | `wp_wec_subscribers` | Correos suscritos o dados de baja |
+| `wp_wec_categories` | ✨ Categorías personalizadas de suscriptores |
+| `wp_wec_subscriber_categories` | ✨ Relación many-to-many suscriptor-categoría |
 
 ---
 
 ## Ejemplo de flujo
 
-1. Crea una plantilla HTML con el shortcode `[[UNSUB_URL]]` al final.  
-2. Crea una campaña desde **Email Manager**.  
-3. Si el destinatario se da de baja, su `status` cambia a `unsubscribed` y el sistema lo excluye automáticamente en futuras campañas.
+1. **Configura categorías** (opcional):
+   - Ve a **Email Manager → Categorías**
+   - Crea categorías como "Ofertas", "VIP", "Proveedores"
+   - Asigna colores para identificación visual
+2. **Crea una plantilla** HTML con el shortcode `[[UNSUB_URL]]` al final.  
+3. **Crea una campaña** desde **Email Manager → Campañas**:
+   - Selecciona plantilla
+   - Filtra por categorías específicas (opcional)
+   - Configura fecha de inicio y lote por minuto
+4. Si el destinatario se da de baja, su `status` cambia a `unsubscribed` y el sistema lo excluye automáticamente en futuras campañas.
 
 ---
 

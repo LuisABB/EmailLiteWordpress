@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Email Collector
  * Description: Gestiona plantillas de email, campañas con cola y vista previa. Incluye SMTP, WP-Cron, Unsubscribe y CSS Inliner para vista previa/envíos.
- * Version:     8.0.0
+ * Version:     9.0.0
  * Author:      Drexora
  * License:     GPLv2 or later
  * Text Domain: wp-email-collector
@@ -41,7 +41,7 @@ if ( ! class_exists('WEC_Email_Collector') ) :
 
 final class WEC_Email_Collector {
     /*** Constants ***/
-    const DB_VER                     = '3';
+    const DB_VER                     = '4';
     const ROOT_MENU_SLUG             = 'wec_root';
     const CPT_TPL                    = 'wec_email_tpl';
     const META_SUBJECT               = '_wec_subject';
@@ -54,6 +54,8 @@ final class WEC_Email_Collector {
     const DB_TABLE_JOBS              = 'wec_jobs';
     const DB_TABLE_ITEMS             = 'wec_job_items';
     const DB_TABLE_SUBSCRIBERS       = 'wec_subscribers';
+    const DB_TABLE_CATEGORIES        = 'wec_categories';
+    const DB_TABLE_SUBSCRIBER_CATEGORIES = 'wec_subscriber_categories';
 
     /*** Bootstrap ***/
     public function __construct() {
@@ -73,6 +75,9 @@ final class WEC_Email_Collector {
 
         // Inicializar Campaign Manager
         add_action( 'init', [ $this, 'init_campaign_manager' ], 5 );
+
+        // Inicializar Category Manager
+        add_action( 'init', [ $this, 'init_category_manager' ], 5 );
 
         // AJAX/Preview
         add_action( 'wp_ajax_'  . self::AJAX_ACTION_PREV,   [ $this, 'ajax_preview_template' ] );
@@ -120,6 +125,13 @@ final class WEC_Email_Collector {
      */
     public function init_campaign_manager() {
         WEC_Campaign_Manager::get_instance();
+    }
+
+    /**
+     * Inicializa el gestor de categorías
+     */
+    public function init_category_manager() {
+        WEC_Category_Manager::get_instance();
     }
 
     /**
@@ -1585,13 +1597,68 @@ function wec_install_tables() {
     @dbDelta($sql1);
     @dbDelta($sql2);
     
+    // Crear tablas de categorías (v9.0.0)
+    $table_categories = $wpdb->prefix . 'wec_categories';
+    $sql3 = "CREATE TABLE {$table_categories} (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        name VARCHAR(100) NOT NULL,
+        slug VARCHAR(100) NOT NULL,
+        description TEXT NULL,
+        color VARCHAR(7) DEFAULT '#3498db',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY slug (slug)
+    ) {$charset};";
+    
+    $table_subscriber_categories = $wpdb->prefix . 'wec_subscriber_categories';
+    $sql4 = "CREATE TABLE {$table_subscriber_categories} (
+        subscriber_id BIGINT UNSIGNED NOT NULL,
+        category_id BIGINT UNSIGNED NOT NULL,
+        assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (subscriber_id, category_id),
+        KEY subscriber_id (subscriber_id),
+        KEY category_id (category_id)
+    ) {$charset};";
+    
+    @dbDelta($sql3);
+    @dbDelta($sql4);
+    
+    // Crear categorías por defecto si no existen
+    $has_categories = $wpdb->get_var("SELECT COUNT(*) FROM {$table_categories}");
+    if (!$has_categories) {
+        $wpdb->insert($table_categories, array(
+            'name' => 'General',
+            'slug' => 'general',
+            'description' => 'Suscriptores generales sin categoría específica',
+            'color' => '#95a5a6'
+        ));
+        $wpdb->insert($table_categories, array(
+            'name' => 'Ofertas',
+            'slug' => 'ofertas',
+            'description' => 'Suscriptores interesados en ofertas y promociones',
+            'color' => '#e74c3c'
+        ));
+        $wpdb->insert($table_categories, array(
+            'name' => 'Proveedores',
+            'slug' => 'proveedores',
+            'description' => 'Proveedores y contactos B2B',
+            'color' => '#3498db'
+        ));
+    }
+    
+    // Agregar columna category_ids a jobs si no existe
+    $col = $wpdb->get_results($wpdb->prepare("SHOW COLUMNS FROM {$table_jobs} LIKE %s", 'category_ids'));
+    if (empty($col)) {
+        $wpdb->query("ALTER TABLE {$table_jobs} ADD COLUMN category_ids TEXT NULL COMMENT 'JSON array de IDs de categorías' AFTER tpl_id");
+    }
+    
     // Programar cron si no existe
     if (!wp_next_scheduled('wec_process_queue')) {
         wp_schedule_event(time(), 'every_five_minutes', 'wec_process_queue');
     }
     
     // Marcar versión
-    update_option('wec_db_ver', '3');
+    update_option('wec_db_ver', '4');
     
     // Limpiar cualquier output
     ob_end_clean();

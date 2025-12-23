@@ -520,17 +520,46 @@ class WEC_Campaign_Manager {
                 <tr>
                     <th><?php esc_html_e('Destinatarios', 'wp-email-collector'); ?></th>
                     <td>
-                        <label>
-                            <input type="radio" name="recipients_mode" value="scan" checked>
-                            <?php esc_html_e('Usar escaneo de todo el sitio', 'wp-email-collector'); ?>
-                        </label><br>
-                        <label>
-                            <input type="radio" name="recipients_mode" value="paste">
-                            <?php esc_html_e('Pegar correos (uno por línea)', 'wp-email-collector'); ?>
-                        </label><br>
-                        <textarea name="recipients_list" rows="6" cols="80" 
-                                  placeholder="correo1@ejemplo.com&#10;correo2@ejemplo.com" 
-                                  style="width:100%;max-width:700px;"></textarea>
+                        <?php 
+                        if (class_exists('WEC_Category_Manager')) {
+                            $category_manager = WEC_Category_Manager::get_instance();
+                            $categories = $category_manager->get_categories();
+                            
+                            if (!empty($categories)) {
+                                echo '<div style="background: #f8f9fa; padding: 15px; border-radius: 4px; border: 1px solid #ddd; margin-bottom: 10px;">';
+                                echo '<p style="margin: 0 0 10px 0; font-weight: 600; color: #333;">📧 Selecciona las categorías de destinatarios:</p>';
+                                
+                                echo '<label style="display: block; margin: 8px 0; font-weight: 600; padding: 8px; background: #e3f2fd; border-radius: 4px;">';
+                                echo '<input type="checkbox" name="category_ids[]" value="all" id="wec-select-all-categories" checked> ';
+                                echo '<span style="font-size: 14px;">✅ Enviar a TODAS las categorías</span>';
+                                echo '</label>';
+                                
+                                echo '<div id="wec-categories-list" style="margin-left: 20px; margin-top: 10px;">';
+                                foreach ($categories as $category) {
+                                    $count = intval($category->subscriber_count);
+                                    echo '<label class="wec-category-option" style="display: block; margin: 6px 0; padding: 6px; border-radius: 3px; transition: background 0.2s;" data-count="' . $count . '">';
+                                    echo '<input type="checkbox" class="wec-category-checkbox" name="category_ids[]" value="' . esc_attr($category->id) . '"> ';
+                                    echo '<span class="wec-category-badge" style="background: ' . esc_attr($category->color) . '; padding: 2px 8px; border-radius: 3px; color: #fff; font-size: 11px; font-weight: 600;">';
+                                    echo esc_html($category->name);
+                                    echo '</span> ';
+                                    echo '<span style="color: #666; font-size: 13px;">(' . $count . ' suscriptor' . ($count != 1 ? 'es' : '') . ')</span>';
+                                    echo '</label>';
+                                }
+                                echo '</div>';
+                                echo '</div>';
+                                
+                                echo '<div id="wec-recipients-counter" style="background: #fff3cd; padding: 12px; border-radius: 4px; border: 1px solid #ffc107; margin-top: 10px;">';
+                                echo '<strong style="color: #856404;">📊 Total de destinatarios: <span id="wec-total-recipients">0</span></strong>';
+                                echo '</div>';
+                                
+                            } else {
+                                echo '<p>' . esc_html__('No hay categorías disponibles.', 'wp-email-collector') . ' ';
+                                echo '<a href="' . admin_url('admin.php?page=wec-categories') . '">' . esc_html__('Crear categorías', 'wp-email-collector') . '</a></p>';
+                            }
+                        } else {
+                            echo '<p>' . esc_html__('El gestor de categorías no está disponible.', 'wp-email-collector') . '</p>';
+                        }
+                        ?>
                     </td>
                 </tr>
                 <tr>
@@ -565,6 +594,76 @@ class WEC_Campaign_Manager {
                 <button class="button button-primary"><?php esc_html_e('Crear campaña', 'wp-email-collector'); ?></button>
             </p>
         </form>
+        
+        <script>
+        jQuery(function($){
+            // Contador dinámico de destinatarios
+            function updateRecipientsCount() {
+                var selectAll = $('#wec-select-all-categories').is(':checked');
+                var total = 0;
+                
+                if (selectAll) {
+                    // Si "todas" está marcado, sumar todos los contadores
+                    $('.wec-category-option').each(function(){
+                        total += parseInt($(this).data('count')) || 0;
+                    });
+                    
+                    // Deshabilitar checkboxes individuales
+                    $('.wec-category-checkbox').prop('disabled', true);
+                    $('#wec-categories-list').css('opacity', '0.5');
+                } else {
+                    // Si "todas" no está marcado, habilitar selección individual
+                    $('.wec-category-checkbox').prop('disabled', false);
+                    $('#wec-categories-list').css('opacity', '1');
+                    
+                    // Sumar solo las categorías seleccionadas
+                    $('.wec-category-checkbox:checked').each(function(){
+                        var count = parseInt($(this).closest('.wec-category-option').data('count')) || 0;
+                        total += count;
+                    });
+                }
+                
+                // Actualizar el contador visual
+                $('#wec-total-recipients').text(total.toLocaleString());
+                
+                // Cambiar color según la cantidad
+                var $counter = $('#wec-recipients-counter');
+                if (total === 0) {
+                    $counter.css({
+                        'background': '#fff3cd',
+                        'border-color': '#ffc107'
+                    });
+                } else {
+                    $counter.css({
+                        'background': '#d4edda',
+                        'border-color': '#28a745'
+                    });
+                }
+            }
+            
+            // Eventos
+            $('#wec-select-all-categories').on('change', function(){
+                updateRecipientsCount();
+            });
+            
+            $('.wec-category-checkbox').on('change', function(){
+                // Si se selecciona alguna categoría individual, desmarcar "todas"
+                if ($(this).is(':checked')) {
+                    $('#wec-select-all-categories').prop('checked', false);
+                }
+                updateRecipientsCount();
+            });
+            
+            // Efecto hover en las opciones
+            $('.wec-category-option').hover(
+                function(){ $(this).css('background', '#f0f0f0'); },
+                function(){ $(this).css('background', 'transparent'); }
+            );
+            
+            // Calcular inicial
+            updateRecipientsCount();
+        });
+        </script>
         <?php
     }
     
@@ -580,6 +679,7 @@ class WEC_Campaign_Manager {
                     <th><?php esc_html_e('ID', 'wp-email-collector'); ?></th>
                     <th><?php esc_html_e('Estado', 'wp-email-collector'); ?></th>
                     <th><?php esc_html_e('Plantilla', 'wp-email-collector'); ?></th>
+                    <th><?php esc_html_e('Categorías', 'wp-email-collector'); ?></th>
                     <th><?php esc_html_e('Inicio', 'wp-email-collector'); ?></th>
                     <th><?php esc_html_e('Total', 'wp-email-collector'); ?></th>
                     <th><?php esc_html_e('Enviados', 'wp-email-collector'); ?></th>
@@ -594,6 +694,7 @@ class WEC_Campaign_Manager {
                     <td>#<?php echo intval($job->id); ?></td>
                     <td><?php echo $this->get_status_html($job->status); ?></td>
                     <td><?php echo esc_html(get_the_title($job->tpl_id)); ?></td>
+                    <td><?php echo $this->get_job_categories_html($job); ?></td>
                     <td><?php echo esc_html($this->format_display_datetime($job->start_at)); ?></td>
                     <td><?php echo intval($job->total); ?></td>
                     <td><?php echo intval($job->sent); ?></td>
@@ -669,6 +770,41 @@ class WEC_Campaign_Manager {
     }
     
     /**
+     * Obtiene el HTML para mostrar las categorías de una campaña
+     */
+    private function get_job_categories_html($job) {
+        if (empty($job->category_ids)) {
+            return '<span style="color: #999;">Todas</span>';
+        }
+        
+        $category_ids = json_decode($job->category_ids, true);
+        
+        if (empty($category_ids) || in_array('all', $category_ids)) {
+            return '<span style="color: #999;">Todas</span>';
+        }
+        
+        if (!class_exists('WEC_Category_Manager')) {
+            return '<span style="color: #999;">-</span>';
+        }
+        
+        $category_manager = WEC_Category_Manager::get_instance();
+        $html = '';
+        
+        foreach ($category_ids as $cat_id) {
+            $category = $category_manager->get_category($cat_id);
+            if ($category) {
+                $html .= sprintf(
+                    '<span class="wec-category-badge" style="background: %s;">%s</span> ',
+                    esc_attr($category->color),
+                    esc_html($category->name)
+                );
+            }
+        }
+        
+        return $html ?: '<span style="color: #999;">-</span>';
+    }
+    
+    /**
      * Maneja la creación de nuevas campañas
      */
     public function handle_create_campaign() {
@@ -679,9 +815,8 @@ class WEC_Campaign_Manager {
         check_admin_referer('wec_campaign_create');
         
         $tpl_id = intval($_POST['tpl_id'] ?? 0);
-        $mode = sanitize_text_field($_POST['recipients_mode'] ?? 'scan');
-        $list_raw = wp_unslash($_POST['recipients_list'] ?? '');
         $start_at = sanitize_text_field($_POST['start_at'] ?? '');
+        $category_ids = isset($_POST['category_ids']) ? array_map('sanitize_text_field', $_POST['category_ids']) : array('all');
         
         // Validar rate limit con límite configurable para prevenir sobrecarga del servidor
         $max_rate = $this->get_max_emails_per_minute();
@@ -699,16 +834,14 @@ class WEC_Campaign_Manager {
             }
         }
         
-        // Construir lista de destinatarios
-        $emails = ($mode === 'paste' && trim($list_raw) !== '') 
-            ? $this->parse_pasted_emails($list_raw) 
-            : $this->gather_emails_full_scan();
+        // Obtener destinatarios por categorías
+        $emails = $this->gather_emails_by_categories($category_ids);
         
         // Excluir desuscritos
         $emails = $this->filter_unsubscribed($emails);
         
         if (empty($emails)) {
-            wp_die(__('No se encontraron destinatarios válidos.', 'wp-email-collector'));
+            wp_die(__('No se encontraron destinatarios válidos en las categorías seleccionadas.', 'wp-email-collector'));
         }
         
         // Crear campaña en base de datos
@@ -716,7 +849,7 @@ class WEC_Campaign_Manager {
     $start_at_log = $start_at;
     $start_at_utc_log = $this->convert_local_to_mysql($start_at);
     error_log("WEC: [CREATE] start_at recibido (CDMX): $start_at_log | convertido a UTC: $start_at_utc_log");
-    $job_id = $this->create_campaign_in_db($tpl_id, $start_at, $rate_per_min, $emails);
+    $job_id = $this->create_campaign_in_db($tpl_id, $start_at, $rate_per_min, $emails, $category_ids);
         
         if (!$job_id) {
             wp_die(__('Error al crear la campaña.', 'wp-email-collector'));
@@ -1274,6 +1407,34 @@ class WEC_Campaign_Manager {
     }
     
     /**
+     * Obtiene emails filtrados por categorías
+     * 
+     * @param array $category_ids Array de IDs de categorías o 'all'
+     * @return array Array de emails únicos
+     */
+    private function gather_emails_by_categories($category_ids) {
+        // Si incluye 'all' o está vacío, obtener todos los suscriptores
+        if (in_array('all', $category_ids) || empty($category_ids)) {
+            return $this->gather_emails_full_scan();
+        }
+        
+        // Usar Category Manager para obtener emails por categorías
+        if (class_exists('WEC_Category_Manager')) {
+            $category_manager = WEC_Category_Manager::get_instance();
+            $subscribers = $category_manager->get_subscribers_by_categories($category_ids, 'subscribed');
+            
+            $emails = array_map(function($subscriber) {
+                return strtolower($subscriber->email);
+            }, $subscribers);
+            
+            return array_values(array_unique($emails));
+        }
+        
+        // Fallback: obtener todos si no hay Category Manager
+        return $this->gather_emails_full_scan();
+    }
+    
+    /**
      * Obtiene el límite configurable para escaneo de usuarios
      * Permite configuración via constante WEC_USERS_SCAN_LIMIT o filtro
      * 
@@ -1531,7 +1692,7 @@ class WEC_Campaign_Manager {
     /**
      * Crea campaña en base de datos
      */
-    private function create_campaign_in_db($tpl_id, $start_at, $rate_per_min, $emails) {
+    private function create_campaign_in_db($tpl_id, $start_at, $rate_per_min, $emails, $category_ids = array('all')) {
         error_log("WEC: Creando campaña - tpl_id: $tpl_id, start_at: $start_at, rate_per_min: $rate_per_min, total_emails: " . count($emails));
         global $wpdb;
         $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
@@ -1539,8 +1700,12 @@ class WEC_Campaign_Manager {
         
         $start_value = $start_at ? $this->convert_local_to_mysql($start_at) : current_time('mysql');
         
+        // Convertir category_ids a JSON
+        $category_ids_json = json_encode($category_ids);
+        
         $wpdb->insert($table_jobs, [
             'tpl_id' => $tpl_id,
+            'category_ids' => $category_ids_json,
             'status' => 'pending',
             'start_at' => $start_value,
             'total' => count($emails),
@@ -1548,7 +1713,7 @@ class WEC_Campaign_Manager {
             'failed' => 0,
             'created_at' => current_time('mysql'),
             'rate_per_minute' => $rate_per_min,
-        ], ['%d', '%s', '%s', '%d', '%d', '%d', '%s', '%d']);
+        ], ['%d', '%s', '%s', '%s', '%d', '%d', '%d', '%s', '%d']);
         
         $job_id = $wpdb->insert_id;
         

@@ -3,6 +3,78 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
+## [9.0.0] - 2024-12-23 - Segmentación por Categorías
+
+### ✨ Nuevas funcionalidades principales
+- **Sistema de Categorías de Suscriptores:**
+  - Nueva tabla `wp_wec_categories` para gestionar categorías personalizadas
+  - Nueva tabla `wp_wec_subscriber_categories` para relación many-to-many
+  - Gestor completo `WEC_Category_Manager` con patrón Singleton
+  - Interfaz de administración para crear, editar y eliminar categorías
+  - Selector de color para identificación visual de categorías
+  - Asignación múltiple: un suscriptor puede pertenecer a varias categorías
+
+### 🎯 Segmentación en Campañas
+- **Filtrado por categorías en campañas:**
+  - Selector de categorías en formulario de crear campaña
+  - Opción "Todas las categorías" para envíos masivos
+  - Selección múltiple para campañas segmentadas
+  - Visualización de categorías en lista de campañas
+  - Columna `category_ids` (JSON) en tabla `wp_wec_jobs`
+
+### 🏗️ Categorías Predeterminadas
+- **Categorías iniciales automáticas:**
+  - General (#95a5a6) - Suscriptores sin categoría específica
+  - Ofertas (#e74c3c) - Interesados en promociones
+  - Proveedores (#3498db) - Contactos B2B
+
+### 📊 Funcionalidades de Gestión
+- **Panel de administración completo:**
+  - Contador de suscriptores por categoría
+  - Edición inline de categorías existentes
+  - Protección de categoría "General" (no eliminable)
+  - Validación de slugs únicos
+  - Generación automática de slugs desde nombres
+  - Color picker integrado para personalización visual
+
+### 🔧 Mejoras Técnicas
+- **Arquitectura modular:**
+  - Clase `WEC_Category_Manager` independiente y reutilizable
+  - Integración con `WEC_Campaign_Manager` mediante interfaces
+  - Función `gather_emails_by_categories()` para filtrado eficiente
+  - Método `get_subscribers_by_categories()` con JOIN optimizado
+  - AJAX para operaciones asíncronas (guardar, eliminar, asignar)
+
+### 🎨 Mejoras de UI/UX
+- **Interfaz visual mejorada:**
+  - Badges de colores para categorías en campañas
+  - Estadísticas en tiempo real de suscriptores por categoría
+  - Formulario unificado para crear/editar categorías
+  - Confirmaciones y validaciones en tiempo real
+  - Estilos CSS inline optimizados
+
+### 🔐 Seguridad
+- **Validación y sanitización:**
+  - Nonces para todas las operaciones AJAX
+  - Sanitización de inputs de categorías
+  - Validación de permisos `manage_options`
+  - Escape de outputs HTML
+  - Validación de JSON en category_ids
+
+### 📦 Compatibilidad
+- **Retrocompatibilidad total:**
+  - Campañas sin categorías siguen funcionando (valor "all")
+  - Migración automática de base de datos a versión 4
+  - Fallback a escaneo completo si no hay categorías
+  - Sin breaking changes en API existente
+
+### 🐛 Correcciones
+- Actualización de versión de plugin a 9.0.0
+- Actualización de versión de base de datos a 4
+- Creación automática de tablas de categorías en activación
+
+---
+
 ## [8.1.0] - 2025-11-29 - Expiración de campañas y limpieza de logs
 
 ### ✨ Cambios principales
