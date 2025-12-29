@@ -3,6 +3,127 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
+## [9.0.0] - 2025-12-23 - Segmentación por Categorías y Limpieza de Emails
+
+### ✨ Nuevas funcionalidades principales
+- **Sistema de Categorías de Suscriptores:**
+  - Nueva tabla `wp_wec_categories` para gestionar categorías personalizadas
+  - Nueva tabla `wp_wec_subscriber_categories` para relación many-to-many
+  - Gestor completo `WEC_Category_Manager` con patrón Singleton
+  - Interfaz de administración para crear, editar y eliminar categorías
+  - Selector de color para identificación visual de categorías
+  - Asignación múltiple: un suscriptor puede pertenecer a varias categorías
+
+### 🔧 Mejoras en Módulo Limpieza de Emails
+- **Recolección no destructiva**: La función "Recolectar Correos" ahora mantiene todos los emails existentes en `wp_wec_subscribers` sin modificarlos ni eliminarlos
+- **Solo inserción de nuevos**: El sistema únicamente añade emails nuevos que no existan previamente en la base de datos
+- **Preservación de estados**: Los emails existentes conservan su estado actual (`subscribed`, `disposable`, `invalid`, etc.) sin ser alterados
+- **Mensajes informativos mejorados**: 
+  - Muestra cantidad de emails nuevos añadidos
+  - Indica total anterior y total final después de la recolección
+  - Mensajes más claros y descriptivos en español
+- **Normalización a minúsculas**: Prevención de duplicados mediante comparación case-insensitive
+- **Fuentes de recolección**: Usuarios registrados de WordPress (`wp_users`) y comentarios aprobados (`wp_comments`)
+- **Estado inicial**: Nuevos emails se añaden con estado vacío (`''`) listos para validación posterior
+- **Información de respuesta**: AJAX devuelve datos detallados (`inserted`, `previous_total`, `final_total`)
+
+### 🎯 Segmentación en Campañas
+- **Envío de campañas por categorías:**
+  - Sistema completamente refactorizado: ahora las campañas se envían por categorías en lugar de por correos individuales
+  - Selector interactivo de categorías en formulario de crear campaña
+  - Checkbox "Enviar a TODAS las categorías" que calcula automáticamente el total de destinatarios
+  - Selección múltiple de categorías específicas con contador en tiempo real
+  - Visualización de categorías con badges de colores en lista de campañas
+  - Columna `category_ids` (JSON) en tabla `wp_wec_jobs` para almacenar las categorías seleccionadas
+  - Método `gather_emails_by_categories()` para filtrado eficiente por categorías
+  - Contador dinámico de destinatarios con validación visual (verde/amarillo)
+  - Deshabilitación automática de opciones cuando "todas" está seleccionado
+
+### 🏗️ Categorías Predeterminadas
+- **Categorías iniciales automáticas:**
+  - General (#95a5a6) - Suscriptores sin categoría específica
+  - Ofertas (#e74c3c) - Interesados en promociones
+  - Proveedores (#3498db) - Contactos B2B
+
+### 📊 Funcionalidades de Gestión
+- **Panel de administración completo:**
+  - Contador de suscriptores por categoría
+  - Edición inline de categorías existentes
+  - Protección de categoría "General" (no eliminable)
+  - Validación de slugs únicos
+  - Generación automática de slugs desde nombres
+  - Color picker integrado para personalización visual
+
+### 🔧 Mejoras Técnicas
+- **Arquitectura modular:**
+  - Clase `WEC_Category_Manager` independiente y reutilizable
+  - Integración con `WEC_Campaign_Manager` mediante interfaces
+  - Función `gather_emails_by_categories()` para filtrado eficiente de destinatarios por categorías seleccionadas
+  - Método `get_subscribers_by_categories()` con JOIN optimizado para consultas rápidas
+  - AJAX para operaciones asíncronas (guardar, eliminar, asignar)
+  - JavaScript dinámico para contador de destinatarios en tiempo real
+  - Método `get_job_categories_html()` para renderizar badges de categorías en campañas
+  - Sistema de fallback: si no hay categorías seleccionadas, usa escaneo completo (`gather_emails_full_scan()`)
+- **Migración automática de suscriptores:**
+  - Función `wec_migrate_subscribers_to_general()` ejecutada al activar el plugin
+  - Migra automáticamente todos los suscriptores con `status = 'subscribed'` sin categoría a "General"
+  - Bandera `wec_subscribers_migrated_to_general` para evitar ejecuciones duplicadas
+  - Logs detallados del proceso de migración para troubleshooting
+- **Asignación automática a "General":**
+  - Correos recolectados con "Recolectar Correos" se asignan automáticamente a categoría "General"
+  - Inserción directa en tabla `wp_wec_subscriber_categories` al crear nuevos suscriptores
+  - Simplificación del contador de categorías: eliminadas subconsultas complejas con `NOT IN`
+  - Conteo directo desde `wp_wec_subscriber_categories` con JOIN a `wp_wec_subscribers`
+
+### 🎨 Mejoras de UI/UX
+- **Interfaz visual mejorada:**
+  - Badges de colores para categorías en lista de campañas
+  - Estadísticas en tiempo real de suscriptores por categoría en formulario de creación
+  - Formulario unificado para crear/editar categorías
+  - Confirmaciones y validaciones en tiempo real
+  - Estilos CSS inline optimizados
+  - Contador visual dinámico de destinatarios con colores según cantidad (0 = amarillo, >0 = verde)
+  - Efectos hover en opciones de categorías para mejor experiencia de usuario
+  - Deshabilitación visual (opacidad 0.5) de categorías cuando "todas" está seleccionado
+  - Mensajes de ayuda y enlaces directos para crear categorías si no existen
+
+### 🔐 Seguridad
+- **Validación y sanitización:**
+  - Nonces para todas las operaciones AJAX
+  - Sanitización de inputs de categorías
+  - Validación de permisos `manage_options`
+  - Escape de outputs HTML
+  - Validación de JSON en category_ids
+
+### 📦 Compatibilidad
+- **Retrocompatibilidad total:**
+  - Campañas sin categorías siguen funcionando (valor "all" por defecto)
+  - Migración automática de base de datos a versión 4
+  - Fallback a escaneo completo (`gather_emails_full_scan()`) si no hay categorías o Category Manager no disponible
+  - Sin breaking changes en API existente
+  - Campo `category_ids` opcional en tabla `wp_wec_jobs` (JSON)
+  - Método `create_campaign_in_db()` acepta parámetro opcional `$category_ids` con valor por defecto `array('all')`
+- **Migración automática en instalación/actualización:**
+  - Al activar el plugin, todos los suscriptores existentes con `status = 'subscribed'` sin categoría se migran automáticamente a "General"
+  - Proceso transparente sin intervención manual del usuario
+  - No afecta suscriptores que ya tienen categorías asignadas
+  - Ejecución única mediante bandera `wec_subscribers_migrated_to_general`
+
+### 🐛 Correcciones
+- Actualización de versión de plugin a 9.0.0
+- Actualización de versión de base de datos a 4
+- Creación automática de tablas de categorías en activación
+- **Eliminada lógica de borrado**: Ya no se eliminan emails de la tabla de suscriptores durante la recolección
+- **Nombre de botón clarificado**: "Validar TODOS" en realidad solo valida emails con `status = ''` (pendientes/nuevos), no re-valida emails ya procesados
+
+### 🎯 Comportamiento del Sistema de Limpieza
+- **"Recolectar Correos"**: Añade nuevos emails sin tocar existentes
+- **"Validar TODOS"**: Solo valida emails con estado vacío (no re-valida `subscribed`, `disposable`, etc.)
+- **Validación individual**: Cada email puede ser validado manualmente mediante botón específico
+- **Protección de datos**: Los emails existentes permanecen intactos durante todo el proceso
+
+---
+
 ## [8.1.0] - 2025-11-29 - Expiración de campañas y limpieza de logs
 
 ### ✨ Cambios principales

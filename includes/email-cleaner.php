@@ -58,7 +58,7 @@ class RCX_Email_Cleaner {
         }
         wp_send_json_success(['validated' => $validated, 'error_credit' => $error_credit]);
     }
-    // AJAX handler: Synchronize subscribers table with unique emails from users/comments
+    // AJAX handler: Recolectar nuevos emails de usuarios y comentarios sin modificar existentes
     public function ajax_validate_empty() {
         if (!current_user_can('manage_options')) {
             wp_send_json_error('No permission');
@@ -69,6 +69,7 @@ class RCX_Email_Cleaner {
         $users_table = $wpdb->prefix . 'users';
         $comments_table = $wpdb->prefix . 'comments';
         $now = current_time('mysql');
+        
         // Get all unique emails from users and approved comments
         $emails = $wpdb->get_col(
             "SELECT DISTINCT email FROM (
@@ -77,35 +78,63 @@ class RCX_Email_Cleaner {
                 SELECT comment_author_email AS email FROM $comments_table WHERE comment_approved = 1 AND comment_author_email != ''
             ) AS all_emails"
         );
+        
         // Normalize emails to lowercase for comparison
         $emails = array_map('strtolower', $emails);
         $emails = array_unique($emails);
+        
         // Get all emails currently in subscribers table
         $current = $wpdb->get_col("SELECT email FROM $subscribers_table");
         $current = array_map('strtolower', $current);
         $current = array_unique($current);
+        
         // Emails to insert (in $emails but not in $current)
         $to_insert = array_diff($emails, $current);
-        // Emails to delete (in $current but not in $emails)
-        $to_delete = array_diff($current, $emails);
+        
+        // Obtener ID de categoría "General" para asignación automática
+        $general_id = null;
+        if (class_exists('WEC_Category_Manager')) {
+            $general_id = $wpdb->get_var(
+                "SELECT id FROM {$wpdb->prefix}wec_categories WHERE slug = 'general' LIMIT 1"
+            );
+        }
+        
+        // CAMBIO: Ya NO eliminamos emails existentes, solo insertamos nuevos
         $inserted = 0;
         foreach ($to_insert as $email) {
-            $wpdb->insert($subscribers_table, [
+            $result = $wpdb->insert($subscribers_table, [
                 'email' => $email,
                 'status' => '',
                 'created_at' => $now
             ]);
-            $inserted++;
+            
+            if ($result) {
+                $subscriber_id = $wpdb->insert_id;
+                
+                // Asignar automáticamente a categoría "General"
+                if ($general_id) {
+                    $wpdb->insert(
+                        $wpdb->prefix . 'wec_subscriber_categories',
+                        array(
+                            'subscriber_id' => $subscriber_id,
+                            'category_id' => $general_id
+                        ),
+                        array('%d', '%d')
+                    );
+                }
+                
+                $inserted++;
+            }
         }
-        $deleted = 0;
-        foreach ($to_delete as $email) {
-            $wpdb->delete($subscribers_table, ['email' => $email]);
-            $deleted++;
-        }
+        
+        // Total actual después de la inserción
+        $total_current = count($current);
+        $final_total = $total_current + $inserted;
+        
         wp_send_json_success([
             'inserted' => $inserted,
-            'deleted' => $deleted,
-            'final_total' => count($emails)
+            'previous_total' => $total_current,
+            'final_total' => $final_total
         ]);
     }
     // Usar la tabla de suscriptores del plugin
@@ -358,17 +387,26 @@ class RCX_Email_Cleaner {
                 });
             });
 
-            // Validar solo status vacío
+            // Recolectar nuevos correos
             $('#rcx-validate-btn').on('click', function(e){
                 showLoading();
-                rcx_debug_log('Click en Validar lista (status vacío)');
+                rcx_debug_log('Click en Recolectar Correos');
                 $.post(ajaxurl, {
                     action: 'rcx_validate_empty',
                     _wpnonce: '<?php echo $nonce; ?>'
                 }, function(resp){
                     hideLoading();
-                    alert('Validación terminada. Recarga la página para ver resultados.');
-                }).fail(function(){ hideLoading(); });
+                    if(resp.success && resp.data) {
+                        var msg = 'Recolección completada:\n\n';
+                        msg += '✓ Nuevos emails añadidos: ' + resp.data.inserted + '\n';
+                        msg += '→ Total anterior: ' + resp.data.previous_total + '\n';
+                        msg += '→ Total actual: ' + resp.data.final_total + '\n\n';
+                        msg += 'Recarga la página para ver los resultados.';
+                        alert(msg);
+                    } else {
+                        alert('Recolección terminada. Recarga la página para ver resultados.');
+                    }
+                }).fail(function(){ hideLoading(); alert('Error al recolectar correos.'); });
             });
             // Validar todos
             $('#rcx-validate-all-btn').on('click', function(e){
