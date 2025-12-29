@@ -871,32 +871,16 @@ JS;
         
         $table_subscribers = $wpdb->prefix . 'wec_subscribers';
         
-        // Obtener categorías con conteo correcto
+        // SIMPLIFICADO: Solo contar de wp_wec_subscriber_categories con status = 'subscribed'
         $categories = $wpdb->get_results(
             "SELECT c.*, 
-            (SELECT COUNT(*) FROM {$this->table_subscriber_categories} 
-             WHERE category_id = c.id) as explicit_count
+            COUNT(DISTINCT CASE WHEN s.status = 'subscribed' THEN sc.subscriber_id END) as subscriber_count
             FROM {$this->table_categories} c
+            LEFT JOIN {$this->table_subscriber_categories} sc ON c.id = sc.category_id
+            LEFT JOIN {$table_subscribers} s ON sc.subscriber_id = s.id
+            GROUP BY c.id
             ORDER BY {$args['orderby']} {$args['order']}"
         );
-        
-        // Para cada categoría, calcular el conteo real
-        foreach ($categories as $cat) {
-            if ($cat->slug === 'general') {
-                // Para General: contar los que tienen General asignado + los que no tienen ninguna categoría
-                $count_with_general = intval($cat->explicit_count);
-                $count_without_categories = intval($wpdb->get_var(
-                    "SELECT COUNT(DISTINCT s.id) 
-                    FROM {$table_subscribers} s
-                    WHERE s.status = 'subscribed'
-                    AND s.id NOT IN (SELECT DISTINCT subscriber_id FROM {$this->table_subscriber_categories})"
-                ));
-                $cat->subscriber_count = $count_with_general + $count_without_categories;
-            } else {
-                // Para otras categorías: solo los que tienen esa categoría asignada
-                $cat->subscriber_count = intval($cat->explicit_count);
-            }
-        }
         
         return $categories;
     }

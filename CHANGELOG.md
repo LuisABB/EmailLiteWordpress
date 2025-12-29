@@ -64,6 +64,16 @@ Todos los cambios importantes del proyecto serán documentados en este archivo.
   - JavaScript dinámico para contador de destinatarios en tiempo real
   - Método `get_job_categories_html()` para renderizar badges de categorías en campañas
   - Sistema de fallback: si no hay categorías seleccionadas, usa escaneo completo (`gather_emails_full_scan()`)
+- **Migración automática de suscriptores:**
+  - Función `wec_migrate_subscribers_to_general()` ejecutada al activar el plugin
+  - Migra automáticamente todos los suscriptores con `status = 'subscribed'` sin categoría a "General"
+  - Bandera `wec_subscribers_migrated_to_general` para evitar ejecuciones duplicadas
+  - Logs detallados del proceso de migración para troubleshooting
+- **Asignación automática a "General":**
+  - Correos recolectados con "Recolectar Correos" se asignan automáticamente a categoría "General"
+  - Inserción directa en tabla `wp_wec_subscriber_categories` al crear nuevos suscriptores
+  - Simplificación del contador de categorías: eliminadas subconsultas complejas con `NOT IN`
+  - Conteo directo desde `wp_wec_subscriber_categories` con JOIN a `wp_wec_subscribers`
 
 ### 🎨 Mejoras de UI/UX
 - **Interfaz visual mejorada:**
@@ -93,6 +103,11 @@ Todos los cambios importantes del proyecto serán documentados en este archivo.
   - Sin breaking changes en API existente
   - Campo `category_ids` opcional en tabla `wp_wec_jobs` (JSON)
   - Método `create_campaign_in_db()` acepta parámetro opcional `$category_ids` con valor por defecto `array('all')`
+- **Migración automática en instalación/actualización:**
+  - Al activar el plugin, todos los suscriptores existentes con `status = 'subscribed'` sin categoría se migran automáticamente a "General"
+  - Proceso transparente sin intervención manual del usuario
+  - No afecta suscriptores que ya tienen categorías asignadas
+  - Ejecución única mediante bandera `wec_subscribers_migrated_to_general`
 
 ### 🐛 Correcciones
 - Actualización de versión de plugin a 9.0.0

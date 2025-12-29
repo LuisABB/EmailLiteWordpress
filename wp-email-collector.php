@@ -1667,6 +1667,77 @@ function wec_install_tables() {
 /*** Hooks de activación/desactivación ***/
 register_activation_hook(__FILE__, 'wec_install_tables');
 
+/**
+ * Migrar suscriptores existentes sin categoría a "General"
+ * Solo migra los que tienen status = 'subscribed'
+ */
+function wec_migrate_subscribers_to_general() {
+    global $wpdb;
+    
+    // Verificar si ya se ejecutó la migración
+    if (get_option('wec_subscribers_migrated_to_general', false)) {
+        return;
+    }
+    
+    $table_subscribers = $wpdb->prefix . 'wec_subscribers';
+    $table_categories = $wpdb->prefix . 'wec_categories';
+    $table_sub_cats = $wpdb->prefix . 'wec_subscriber_categories';
+    
+    // Obtener ID de categoría "General"
+    $general_id = $wpdb->get_var(
+        "SELECT id FROM {$table_categories} WHERE slug = 'general' LIMIT 1"
+    );
+    
+    if (!$general_id) {
+        error_log('WEC: No se encontró la categoría General para migración');
+        return;
+    }
+    
+    // Obtener todos los suscriptores con status 'subscribed' que NO tienen ninguna categoría
+    $subscribers_without_category = $wpdb->get_results(
+        "SELECT id FROM {$table_subscribers} 
+        WHERE status = 'subscribed'
+        AND id NOT IN (SELECT DISTINCT subscriber_id FROM {$table_sub_cats})"
+    );
+    
+    if (empty($subscribers_without_category)) {
+        error_log('WEC: No hay suscriptores subscribed sin categoría para migrar');
+        update_option('wec_subscribers_migrated_to_general', true);
+        return;
+    }
+    
+    $migrated = 0;
+    
+    foreach ($subscribers_without_category as $subscriber) {
+        $result = $wpdb->insert(
+            $table_sub_cats,
+            array(
+                'subscriber_id' => $subscriber->id,
+                'category_id' => $general_id
+            ),
+            array('%d', '%d')
+        );
+        
+        if ($result) {
+            $migrated++;
+        }
+    }
+    
+    error_log("WEC: Migrados {$migrated} suscriptores 'subscribed' a categoría General");
+    
+    // Guardar bandera de migración completada
+    update_option('wec_subscribers_migrated_to_general', true);
+}
+
+// Ejecutar migración después de crear las tablas
+add_action('admin_init', function() {
+    // Solo ejecutar si las tablas ya existen
+    $db_version = get_option('wec_db_ver', '');
+    if ($db_version === '4' && class_exists('WEC_Category_Manager')) {
+        wec_migrate_subscribers_to_general();
+    }
+}, 20);
+
 register_deactivation_hook(__FILE__, function() {
     wp_clear_scheduled_hook('wec_process_queue');
 });

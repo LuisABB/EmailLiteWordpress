@@ -69,6 +69,7 @@ class RCX_Email_Cleaner {
         $users_table = $wpdb->prefix . 'users';
         $comments_table = $wpdb->prefix . 'comments';
         $now = current_time('mysql');
+        
         // Get all unique emails from users and approved comments
         $emails = $wpdb->get_col(
             "SELECT DISTINCT email FROM (
@@ -77,28 +78,59 @@ class RCX_Email_Cleaner {
                 SELECT comment_author_email AS email FROM $comments_table WHERE comment_approved = 1 AND comment_author_email != ''
             ) AS all_emails"
         );
+        
         // Normalize emails to lowercase for comparison
         $emails = array_map('strtolower', $emails);
         $emails = array_unique($emails);
+        
         // Get all emails currently in subscribers table
         $current = $wpdb->get_col("SELECT email FROM $subscribers_table");
         $current = array_map('strtolower', $current);
         $current = array_unique($current);
+        
         // Emails to insert (in $emails but not in $current)
         $to_insert = array_diff($emails, $current);
+        
+        // Obtener ID de categoría "General" para asignación automática
+        $general_id = null;
+        if (class_exists('WEC_Category_Manager')) {
+            $general_id = $wpdb->get_var(
+                "SELECT id FROM {$wpdb->prefix}wec_categories WHERE slug = 'general' LIMIT 1"
+            );
+        }
+        
         // CAMBIO: Ya NO eliminamos emails existentes, solo insertamos nuevos
         $inserted = 0;
         foreach ($to_insert as $email) {
-            $wpdb->insert($subscribers_table, [
+            $result = $wpdb->insert($subscribers_table, [
                 'email' => $email,
                 'status' => '',
                 'created_at' => $now
             ]);
-            $inserted++;
+            
+            if ($result) {
+                $subscriber_id = $wpdb->insert_id;
+                
+                // Asignar automáticamente a categoría "General"
+                if ($general_id) {
+                    $wpdb->insert(
+                        $wpdb->prefix . 'wec_subscriber_categories',
+                        array(
+                            'subscriber_id' => $subscriber_id,
+                            'category_id' => $general_id
+                        ),
+                        array('%d', '%d')
+                    );
+                }
+                
+                $inserted++;
+            }
         }
+        
         // Total actual después de la inserción
         $total_current = count($current);
         $final_total = $total_current + $inserted;
+        
         wp_send_json_success([
             'inserted' => $inserted,
             'previous_total' => $total_current,
