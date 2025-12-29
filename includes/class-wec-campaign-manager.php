@@ -16,6 +16,22 @@
 
 if (!defined('ABSPATH')) exit;
 
+/**
+ * Configuración del límite de emails por minuto para cumplir con Webempresa
+ * Webempresa Hosting Profesional 6GB = 500 emails/hora máximo
+ * 500 emails/hora = 8.33 emails/minuto
+ * Configuramos 8 emails/minuto = 480 emails/hora (margen de seguridad)
+ * 
+ * Con 900 suscriptores:
+ * - Tiempo estimado de campaña: ~113 minutos (1h 53min)
+ * - Emails por hora: 480 (dentro del límite de 500)
+ * 
+ * @since 9.1.0
+ */
+if (!defined('WEC_MAX_EMAILS_PER_MINUTE')) {
+    define('WEC_MAX_EMAILS_PER_MINUTE', 8);
+}
+
 // Verificar requisitos mínimos de PHP
 if (version_compare(PHP_VERSION, '7.4', '<')) {
     if (is_admin()) {
@@ -1043,11 +1059,16 @@ class WEC_Campaign_Manager {
             error_log("WEC: [CRON] Batch obtenido para job {$job->id}: " . count($batch) . " items");
             if (!$batch) {
                 // Sin pendientes -> finalizar
+                // Convertir hora CDMX a UTC para guardar en BD
+                $now_cdmx = new DateTime('now', new DateTimeZone('America/Mexico_City'));
+                $now_cdmx->setTimezone(new DateTimeZone('UTC'));
+                $finished_at_utc = $now_cdmx->format('Y-m-d H:i:s');
+                
                 $wpdb->update($table_jobs, [
                     'status' => 'done',
-                    'finished_at' => current_time('mysql')
+                    'finished_at' => $finished_at_utc
                 ], ['id' => $job->id], ['%s', '%s'], ['%d']);
-                error_log("WEC: [CRON] Job ID {$job->id} finalizado (sin pendientes). Status cambiado a 'done'.");
+                error_log("WEC: [CRON] Job ID {$job->id} finalizado (sin pendientes). Status cambiado a 'done'. Fin: {$finished_at_utc} UTC");
                 return;
             }
             // Procesar el lote
@@ -1090,16 +1111,21 @@ class WEC_Campaign_Manager {
         
         if (is_wp_error($template_result)) {
             // Error en la plantilla - marcar job como fallido
+            // Convertir hora CDMX a UTC para guardar en BD
+            $now_cdmx = new DateTime('now', new DateTimeZone('America/Mexico_City'));
+            $now_cdmx->setTimezone(new DateTimeZone('UTC'));
+            $finished_at_utc = $now_cdmx->format('Y-m-d H:i:s');
+            
             global $wpdb;
             $table_jobs = $wpdb->prefix . self::DB_TABLE_JOBS;
             $safe_table_jobs = $this->escape_table_name($table_jobs);
             $wpdb->update($table_jobs, [
                 'status' => 'failed',
                 'log_error' => $template_result->get_error_message(),
-                'finished_at' => current_time('mysql')
+                'finished_at' => $finished_at_utc
             ], ['id' => $job->id], ['%s', '%s', '%s'], ['%d']);
             error_log("WEC: [BATCH] Error al renderizar plantilla {$job->tpl_id} para job {$job->id}: " . $template_result->get_error_message());
-            error_log("WEC: [BATCH] Job ID {$job->id} marcado como failed por error de plantilla.");
+            error_log("WEC: [BATCH] Job ID {$job->id} marcado como failed por error de plantilla. Fin: {$finished_at_utc} UTC");
             return;
         }
         

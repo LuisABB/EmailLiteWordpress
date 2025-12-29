@@ -3,6 +3,43 @@
 
 Todos los cambios importantes del proyecto serán documentados en este archivo.
 
+## [9.1.0] - 2025-12-28 - Optimización para Webempresa
+
+### ⚡ Optimizaciones de Rendimiento
+- **Límite de envío optimizado para Webempresa:**
+  - Configuración automática de 8 emails por minuto (480 emails/hora)
+  - Cumple con el límite de Webempresa Hosting Profesional 6GB (500 emails/hora)
+  - Margen de seguridad de 20 emails/hora para evitar limitaciones
+  - Constante `WEC_MAX_EMAILS_PER_MINUTE` definida en `class-wec-campaign-manager.php`
+
+### 🐛 Correcciones
+- **Corrección de zona horaria en fecha de finalización:**
+  - Las campañas ahora registran correctamente la hora de finalización en CDMX
+  - Antes: `finished_at` usaba `current_time('mysql')` que no convertía correctamente a UTC
+  - Ahora: Conversión explícita CDMX → UTC usando `DateTime` y `DateTimeZone`
+  - Afecta a campañas completadas (`done`) y campañas con error (`failed`)
+  - Logs mejorados con marca de tiempo UTC para debugging
+
+### 🔧 Mejoras Técnicas
+- **Conversión de zonas horarias consistente:**
+  - Método unificado para convertir CDMX a UTC en todas las operaciones de finalización
+  - Mismo patrón usado en campañas expiradas ahora aplicado a campañas completadas
+  - Logs detallados incluyen timestamp UTC para trazabilidad
+
+### 📊 Rendimiento Esperado
+- **Con 900 suscriptores:**
+  - Tiempo estimado de campaña: ~113 minutos (1h 53min)
+  - Emails por hora: 480 (dentro del límite de 500)
+  - Sin riesgo de limitación por parte del hosting
+
+### 🎯 Compatibilidad
+- **100% compatible con versión 9.0.0**
+- Sin cambios en base de datos
+- Sin cambios en API existente
+- Actualización transparente
+
+---
+
 ## [9.0.0] - 2025-12-23 - Segmentación por Categorías y Limpieza de Emails
 
 ### ✨ Nuevas funcionalidades principales
